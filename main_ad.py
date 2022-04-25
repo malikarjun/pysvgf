@@ -1,9 +1,7 @@
-import numpy as np
 from os.path import join, exists
 from copy import deepcopy
 from tqdm import tqdm
 from scipy.ndimage import gaussian_filter
-from file_utils import *
 from jax import grad, jit, lax
 import jax.numpy as jnp
 
@@ -141,16 +139,6 @@ def compute_weight(depth_center, depth_p, phi_depth, normal_center, normal_p, ph
 
     # return weight_illum
     return weight_illum
-
-
-# def compute_weight(depth_center, depth_p, phi_depth, normal_center, normal_p, phi_normal, luminance_illum_center,
-#                    luminance_illum_p, phi_illum):
-#     weight_normal = pow(saturate(normal_center.dot(normal_p)), phi_normal)
-#     weight_z = 0.0 if phi_depth == 0 else abs(depth_center - depth_p) / phi_depth
-#     weight_l_illum = abs(luminance_illum_center - luminance_illum_p) / phi_illum
-#     weight_illum = np.exp(0.0 - max(weight_l_illum, 0.0) - max(weight_z, 0.0)) * weight_normal
-#
-#     return weight_illum
 
 
 
