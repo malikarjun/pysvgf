@@ -371,8 +371,8 @@ if __name__ == '__main__':
         np.save(integrated_moments_path, integrated_moments)
         np.save(integrated_variance_path, integrated_variance)
 
-    frame_illum[1] = integrated_illum
-    frame_moments[1] = integrated_moments
+    frame_illum[curr_frame] = integrated_illum
+    frame_moments[curr_frame] = integrated_moments
 
 
     input_illum = deepcopy(frame_illum[curr_frame])

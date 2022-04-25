@@ -1,5 +1,12 @@
 import cv2
 import OpenEXR, array
+from os.path import exists
+import numpy as np
+
+def get_file(filename):
+    if exists(filename):
+        return np.load(filename)
+    return None
 
 def read_exr_file(filepath):
     img = cv2.imread(filepath, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
