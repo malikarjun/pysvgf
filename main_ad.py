@@ -1,5 +1,8 @@
+import time
 from os.path import join, exists
 from copy import deepcopy
+
+import jax
 from tqdm import tqdm
 from scipy.ndimage import gaussian_filter
 from jax import grad, jit, lax
@@ -137,7 +140,6 @@ def compute_weight(depth_center, depth_p, phi_depth, normal_center, normal_p, ph
     weight_l_illum = jnp.abs(luminance_illum_center - luminance_illum_p) / phi_illum
     weight_illum = jnp.exp(0.0 - jnp_max(weight_l_illum, 0.0) - jnp_max(weight_z, 0.0)) * weight_normal
 
-    # return weight_illum
     return weight_illum
 
 
@@ -213,6 +215,7 @@ _var_center = "var_center"
 _phi_depth = "phi_depth"
 _phi_l_illumination = "phi_l_illumination"
 
+@jax.jit
 def learnable_atrous_decomposition(illum, filter, variance, depth, normal, depth_grad, g_step_size):
     h, w, c = illum.shape
 
@@ -267,100 +270,15 @@ def learnable_atrous_decomposition(illum, filter, variance, depth, normal, depth
             _phi_l_illumination : g_phi_illum * jnp.sqrt(jnp_max(0.0, 1e-8 + variance[ii, jj]))
         }
         data_dict = lax.fori_loop(0, (2*radius + 1) ** 2, func_micro, data_dict)
-
+        data_dict[_sum_weight] = jnp_max(1e-6, data_dict[_sum_weight])
         return filtered_img.at[ii, jj].set(data_dict[_sum_illum] / data_dict[_sum_weight])
-        # return filtered_img.at[ii, jj].set(data_dict[_sum_illum])
-        # return filtered_img.at[ii, jj].set(data_dict[_sum_weight])
 
     filtered_img = lax.fori_loop(radius * radius, (h - radius) * (w - radius), func_macro, filtered_img)
 
     return filtered_img
 
-def compute_atrous_decomposition(illum, in_variance, depth, normal, depth_grad, g_step_size):
-    print("computing atrous decomposition...")
-    hh, ww, cc = illum.shape
-    g_illumination = illum
-    g_variance = deepcopy(in_variance)
-    g_variance = gaussian_filter(g_variance, sigma=3, truncate=3)
-
-
-    g_depth = depth
-    g_normal = normal
-    g_depth_grad = depth_grad
-    kernel_weights = np.array([1.0, 2.0 / 3.0, 1.0 / 6.0])
-    # TODO: the paper has different weights
-    # kernel_weights = np.array([3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0])
-
-
-    filtered_color = np.zeros((hh, ww, cc))
-    filtered_variance = np.zeros((hh, ww))
-
-    radius = 2
-
-    for i in tqdm(range(hh)):
-        for j in range(ww):
-
-            # if not debug(i, j):
-            #     continue
-
-            ipos = np.array([i, j])
-            # sum_w_illumination = kernel_weights[0]
-            sum_w_illumination = 0.0
-            # FIXME: best so far
-            sum_illumination = np.array([0, 0, 0]).astype(float)
-            # sum_illumination = g_illumination[i, j] * sum_w_illumination
-            sum_variance = 0.0
-
-            illumination_center = g_illumination[i, j]
-            l_illumination_center = luminance(illumination_center)
-            z_center = g_depth[i, j]
-            n_center = g_normal[i, j]
-            # this has been gaussian blurred
-            var_center = g_variance[i, j]
-
-            # TODO: revisit g_depth_grad
-            phi_depth = max(1e-8, g_depth_grad[i, j]) * g_phi_depth
-
-            # FIXME : best so far
-            phi_l_illumination = g_phi_illum * np.sqrt(max(0.0, 1e-8 + var_center))
-            # phi_l_illumination = g_phi_illum
-            # phi_l_illumination = g_phi_illum * np.sqrt(max(0.0, 1.0 + g_variance[i, j]))
-
-            for yy in range(-radius, radius):
-                for xx in range(-radius, radius):
-                    p = np.array([yy, xx]) * g_step_size + ipos
-                    inside = np.all(np.greater_equal(p, np.array([0, 0]))) and np.all(np.less(p, np.array([hh, ww])))
-                    kernel = kernel_weights[abs(xx)] * kernel_weights[abs(yy)]
-
-                    if inside and (xx != 0 or yy != 0):
-                        y, x = p[0], p[1]
-                        illumination_p = g_illumination[y, x]
-                        variance_p = g_variance[y, x]
-                        l_illumination_p = luminance(illumination_p)
-                        z_p = g_depth[y, x]
-                        n_p = g_normal[y, x]
-
-                        # TODO: how do we compute depth gradients
-                        w = compute_weight(z_center, z_p, phi_depth * np.linalg.norm(np.array([yy, xx])),
-                                           n_center, n_p, g_phi_normal,
-                                           l_illumination_center, l_illumination_p, phi_l_illumination)
-
-                        w_illumination = w * kernel
-                        sum_w_illumination += w_illumination
-                        sum_illumination += w_illumination * illumination_p
-                        sum_variance += np.square(w_illumination) * variance_p
-
-            sum_w_illumination = max(sum_w_illumination, 1e-6)
-
-            sum_illumination /= sum_w_illumination
-            sum_variance /= np.square(sum_w_illumination)
-
-            filtered_color[i, j, :] = sum_illumination
-            # print(sum_illumination)
-            # exit(0)
-
-            filtered_variance[i, j] = sum_variance
-    return filtered_color, filtered_variance
+def loss_fn(img, gt, filter, aux_args):
+    return jnp.mean((learnable_atrous_decomposition(img, filter, *aux_args) - gt) ** 2)
 
 if __name__ == '__main__':
     USE_TEMPORAL_ACCU = True
@@ -428,18 +346,25 @@ if __name__ == '__main__':
         input_normal = jnp.array(frame_normal[curr_frame])
         input_depth_grad = jnp.array(frame_depth_grad[curr_frame])
 
-
-        # TODO : replace this with the actual filter computed using 1d array
-        # atrous_filter = jnp.ones((5, 5))
         atrous_filter = jnp.array(generate_atrous_kernel())
-        learnable_atrous_decomposition = jit(learnable_atrous_decomposition
-                                             # ,static_argnames=["depth", "normal", "depth_grad"]
-                                             )
-
         output_illum = learnable_atrous_decomposition(input_illum, atrous_filter, input_var, input_depth,
                                                                 input_normal, input_depth_grad,
                                                                 g_step_size=step_size)
         write_exr_file("iter{}_color_ad.exr".format(i+1), output_illum)
+
+
+        print("gradient computation...")
+        gt = read_exr_file("frame1_gt.exr")
+        aux_args = [input_var, input_depth, input_normal, input_depth_grad, step_size]
+        # loss = loss_fn(input_illum, gt, atrous_filter, aux_args)
+        grad_loss = grad(loss_fn, argnums=2)
+
+        start_time = time.time()
+        gradient_filter = grad_loss(input_illum, gt, atrous_filter, aux_args)
+        print("time taken for gradient computation {}".format(time.time() - start_time))
+        print(gradient_filter)
+        print(gradient_filter.shape)
+
         # write_exr_file("iter{}_variance.exr".format(i+1), output_var)
         # input_illum = deepcopy(output_illum)
         # input_var = deepcopy(output_var)
