@@ -1,42 +1,22 @@
-import numpy as np
-import cv2
 from os.path import join, exists
-import OpenEXR, array
 from copy import deepcopy
 from tqdm import tqdm
 from scipy.ndimage import gaussian_filter
+from file_utils import *
 
 frame_base_path = "/Users/mallikarjunswamy/imp/acads/courses/winter-2022/CSE_272/lajolla_public/cmake-build-debug"
+inter_path = "intermediate_results"
 
 g_phi_illum=4
 g_phi_normal=128
 g_phi_depth=3
 global_alpha=0.2
 
+# def debug(i, j):
+#     return i == 220 and j == 145
+
 def debug(i, j):
-    return i == 410 and j == 344
-
-def read_exr_file(filepath):
-    img = cv2.imread(filepath, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
-    if len(img.shape) == 3:
-        img = img[:, :, ::-1]
-    return img
-
-def write_exr_file(filepath, data):
-
-    if len(data.shape) == 3:
-        h, w, _ = data.shape
-        exr = OpenEXR.OutputFile(filepath, OpenEXR.Header(h, w))
-        r = array.array('f', data[:, :, 0].flatten().tolist())
-        g = array.array('f', data[:, :, 1].flatten().tolist())
-        b = array.array('f', data[:, :, 2].flatten().tolist())
-        exr.writePixels({'R': r, 'G': g, 'B': b})
-    else:
-        h, w = data.shape
-        exr = OpenEXR.OutputFile(filepath, OpenEXR.Header(h, w))
-        r = array.array('f', data[:, :].flatten().tolist())
-        exr.writePixels({'R': r, 'G': r, 'B': r})
-
+    return abs(i - 220) <= 1 and abs(j - 145) <= 1
 
 def luminance_vec(r, g, b):
     return 0.2126 * r + 0.7152 * g + 0.0722 * b
@@ -65,7 +45,7 @@ def test_reprojected_normal(n1, n2):
 def compute_adaptive_alpha(frame_depth, frame_normal, frame_depth_grad, frame=1):
     print("compute adaptive alpha")
 
-    hh, ww, cc = frame_depth[0].shape
+    hh, ww = frame_depth[0].shape
 
     disocclusion = np.zeros((hh, ww))
 
@@ -75,9 +55,9 @@ def compute_adaptive_alpha(frame_depth, frame_normal, frame_depth_grad, frame=1)
     lamda = relative_gradient(frame0, frame1)
     alpha = (1 - lamda) * global_alpha + lamda
 
-    prev_depth = frame_depth[frame-1][:, :, 0]
+    prev_depth = frame_depth[frame-1]
     prev_normal = frame_normal[frame-1]
-    curr_depth = frame_depth[frame][:, :, 0]
+    curr_depth = frame_depth[frame]
     curr_normal = frame_normal[frame]
     curr_depth_grad = frame_depth_grad[frame]
 
@@ -99,7 +79,7 @@ def compute_moments(color):
 
 # TODO: this is wrong. @trevor mentioned the right way to compute this using ray differentials
 def compute_depth_gradient(depth):
-    depth = deepcopy(depth)[:, :, 0]
+    depth = deepcopy(depth)
     h, w = depth.shape
     depth = np.pad(depth, (1,1), mode='edge')
 
@@ -188,6 +168,7 @@ def compute_weight(depth_center, depth_p, phi_depth, normal_center, normal_p, ph
     weight_illum = np.exp(0.0 - max(weight_l_illum, 0.0) - max(weight_z, 0.0)) * weight_normal
 
     return weight_illum
+    # return weight_illum
 
 
 
@@ -197,7 +178,7 @@ def compute_variance_spatially(frame_illum, frame_depth, frame_normal, frame_mom
     hh, ww, _ = frame_illum[frame].shape
     g_illumination = frame_illum[frame]
     g_moments = frame_moments[frame]
-    g_depth = frame_depth[frame][:, :, 0]
+    g_depth = frame_depth[frame]
     g_normal = frame_normal[frame]
     g_depth_grad = frame_depth_grad[frame]
 
@@ -248,7 +229,8 @@ def compute_variance_spatially(frame_illum, frame_depth, frame_normal, frame_mom
             sum_moments /= sum_w_illumination
 
             variance[i, j] = sum_moments[1] - sum_moments[0] * sum_moments[0]
-    return np.repeat(variance[:, :, np.newaxis], 3, axis=2)
+    # return np.repeat(variance[:, :, np.newaxis], 3, axis=2)
+    return variance
 
 
 
@@ -260,7 +242,7 @@ def compute_atrous_decomposition(illum, in_variance, depth, normal, depth_grad, 
     g_variance = gaussian_filter(g_variance, sigma=3, truncate=3)
 
 
-    g_depth = depth[:, :, 0]
+    g_depth = depth
     g_normal = normal
     g_depth_grad = depth_grad
     kernel_weights = np.array([1.0, 2.0 / 3.0, 1.0 / 6.0])
@@ -302,8 +284,8 @@ def compute_atrous_decomposition(illum, in_variance, depth, normal, depth_grad, 
             # phi_l_illumination = g_phi_illum
             # phi_l_illumination = g_phi_illum * np.sqrt(max(0.0, 1.0 + g_variance[i, j]))
 
-            for yy in range(-radius, radius):
-                for xx in range(-radius, radius):
+            for yy in range(-radius, radius+1):
+                for xx in range(-radius, radius+1):
                     p = np.array([yy, xx]) * g_step_size + ipos
                     inside = np.all(np.greater_equal(p, np.array([0, 0]))) and np.all(np.less(p, np.array([hh, ww])))
                     kernel = kernel_weights[abs(xx)] * kernel_weights[abs(yy)]
@@ -332,6 +314,8 @@ def compute_atrous_decomposition(illum, in_variance, depth, normal, depth_grad, 
             sum_variance /= np.square(sum_w_illumination)
 
             filtered_color[i, j, :] = sum_illumination
+            # filtered_color[i, j, :] = sum_w_illumination
+            # print(sum_w_illumination)
             # print(sum_illumination)
             # exit(0)
 
@@ -350,75 +334,56 @@ if __name__ == '__main__':
 
     for i in range(2):
         frame_illum.append(read_exr_file(join(frame_base_path, "frame{}.exr".format(i))))
-        frame_depth.append(read_exr_file(join(frame_base_path, "frame{}_depth.exr".format(i))))
+        frame_depth.append(read_exr_file(join(frame_base_path, "frame{}_depth.exr".format(i)))[:, :, 0])
         frame_normal.append(read_exr_file(join(frame_base_path, "frame{}_normal.exr".format(i))))
         frame_moments.append(compute_moments(frame_illum[i]))
         frame_depth_grad.append(compute_depth_gradient(frame_depth[i]))
 
-    adaptive_alpha, disocclusion = compute_adaptive_alpha(frame_depth, frame_normal, frame_depth_grad)
-    write_exr_file("adaptive_alpha.exr", adaptive_alpha)
-    write_exr_file("disocclusion.exr", disocclusion)
+    prev_frame = 0
+    curr_frame = 1
 
+    adaptive_alpha_path = join(inter_path, "adaptive_alpha.npy")
+    disocclusion_path = join(inter_path, "disocclusion.npy")
+    adaptive_alpha = get_file(adaptive_alpha_path)
+    disocclusion = get_file(disocclusion_path)
+    if adaptive_alpha is None or disocclusion is None:
+        adaptive_alpha, disocclusion = compute_adaptive_alpha(frame_depth, frame_normal, frame_depth_grad)
+        np.save(adaptive_alpha_path, adaptive_alpha)
+        np.save(disocclusion_path, disocclusion)
 
-    # var_filename = "variance_temporal_accu.exr"
-    # if exists(var_filename):
-    #     variance = read_exr_file(var_filename)
-    # else:
-    #     print("variance not found!!")
-    integrated_illum, integrated_moments, integrated_variance = temporal_integration(
-        g_prev_illum=frame_illum[0], g_prev_moments=frame_moments[0],
-        g_illum=frame_illum[1], g_moments=frame_moments[1], g_adapt_alpha=adaptive_alpha)
+    integrated_illum_path = join(inter_path, "integrated_illum.npy")
+    integrated_moments_path = join(inter_path, "integrated_moments.npy")
+    integrated_variance_path = join(inter_path, "variance.npy")
 
-    write_exr_file("illum_after_temporal_int.exr", integrated_illum)
+    integrated_illum = get_file(integrated_illum_path)
+    integrated_moments = get_file(integrated_moments_path)
+    integrated_variance = get_file(integrated_variance_path)
 
-    # these variables are used in the atrous decompostion function
-    variance = integrated_variance
+    if integrated_illum is None or integrated_moments is None or integrated_variance is None:
+        integrated_illum, integrated_moments, integrated_variance = temporal_integration(
+            g_prev_illum=frame_illum[prev_frame], g_prev_moments=frame_moments[prev_frame],
+            g_illum=frame_illum[curr_frame], g_moments=frame_moments[curr_frame], g_adapt_alpha=adaptive_alpha)
+
+        integrated_variance = compute_variance_spatially(frame_illum, frame_depth, frame_normal, frame_moments,
+                                              frame_depth_grad, disocclusion, integrated_variance)
+
+        np.save(integrated_illum_path, integrated_illum)
+        np.save(integrated_moments_path, integrated_moments)
+        np.save(integrated_variance_path, integrated_variance)
+
     frame_illum[1] = integrated_illum
     frame_moments[1] = integrated_moments
-    write_exr_file("variance_after_temporal_accu.exr", variance)
-
-    # else:
-    #     var_filename = "variance_spatial.exr"
-    #     if exists(var_filename):
-    #         variance = read_exr_file(var_filename)
-    #     else:
-
-    # for i in range(3):
-    #     frame_illum[1][:, :, i] = gaussian_filter(frame_illum[1][:, :, i], sigma=1, truncate=1)
-
-    variance = compute_variance_spatially(frame_illum, frame_depth, frame_normal, frame_moments,
-                                          frame_depth_grad, disocclusion, variance)
 
 
-    write_exr_file("variance_after_spatial.exr", variance)
-
-
-    # TODO: pass only single frame data to atrous
-    frame = 1
-
-    input_illum = deepcopy(frame_illum[frame])
-    input_var = deepcopy(variance)[:, :, 0]
+    input_illum = deepcopy(frame_illum[curr_frame])
+    input_var = deepcopy(integrated_variance)
 
     for i in range(5):
         step_size = 1 << i
-        output_illum, output_var = compute_atrous_decomposition(input_illum, input_var, frame_depth[frame],
-                                                                frame_normal[frame], frame_depth_grad[frame],
+        output_illum, output_var = compute_atrous_decomposition(input_illum, input_var, frame_depth[curr_frame],
+                                                                frame_normal[curr_frame], frame_depth_grad[curr_frame],
                                                                 g_step_size=step_size)
         write_exr_file("iter{}_color.exr".format(i+1), output_illum)
         write_exr_file("iter{}_variance.exr".format(i+1), output_var)
         input_illum = deepcopy(output_illum)
         input_var = deepcopy(output_var)
-
-
-    # step_size = 1 << 2
-    # input_illum = read_exr_file("iter3_color.exr")
-    # input_var = read_exr_file("iter3_variance.exr")[:, :, 0]
-    # compute_atrous_decomposition(input_illum, input_var, frame_depth[frame],
-    #                              frame_normal[frame], frame_depth_grad[frame],
-    #                              g_step_size=step_size)
-
-
-
-    # path = "/Users/mallikarjunswamy/imp/acads/courses/winter-2022/CSE_272/lajolla_public/cmake-build-debug/data.npy"
-    # data = np.load(path)
-    # print(data)
