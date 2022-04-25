@@ -1,10 +1,12 @@
 from os.path import join, exists
+import os
 from copy import deepcopy
 from tqdm import tqdm
 from scipy.ndimage import gaussian_filter
 from file_utils import *
 
-frame_base_path = "/Users/mallikarjunswamy/imp/acads/courses/winter-2022/CSE_272/lajolla_public/cmake-build-debug"
+frame_base_path = "data"
+output_path = "output"
 inter_path = "intermediate_results"
 
 g_phi_illum=4
@@ -323,6 +325,7 @@ def compute_atrous_decomposition(illum, in_variance, depth, normal, depth_grad, 
     return filtered_color, filtered_variance
 
 if __name__ == '__main__':
+    os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
 
     USE_TEMPORAL_ACCU = True
 
@@ -383,7 +386,7 @@ if __name__ == '__main__':
         output_illum, output_var = compute_atrous_decomposition(input_illum, input_var, frame_depth[curr_frame],
                                                                 frame_normal[curr_frame], frame_depth_grad[curr_frame],
                                                                 g_step_size=step_size)
-        write_exr_file("iter{}_color.exr".format(i+1), output_illum)
-        write_exr_file("iter{}_variance.exr".format(i+1), output_var)
+        write_exr_file(join(output_path, "iter{}_color.exr".format(i+1)), output_illum)
+        write_exr_file(join(output_path, "iter{}_variance.exr").format(i+1), output_var)
         input_illum = deepcopy(output_illum)
         input_var = deepcopy(output_var)

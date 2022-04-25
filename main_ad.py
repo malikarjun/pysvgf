@@ -1,5 +1,6 @@
 import time
 from os.path import join, exists
+import os
 from copy import deepcopy
 
 import jax
@@ -10,7 +11,8 @@ import jax.numpy as jnp
 
 from learnable_utils import *
 
-frame_base_path = "/Users/mallikarjunswamy/imp/acads/courses/winter-2022/CSE_272/lajolla_public/cmake-build-debug"
+input_path = "data"
+output_path = "output"
 inter_path = "intermediate_results"
 
 g_phi_illum=4
@@ -52,8 +54,8 @@ def compute_adaptive_alpha(frame_depth, frame_normal, frame_depth_grad, frame=1)
 
     disocclusion = np.zeros((hh, ww))
 
-    frame0 = read_exr_file(join(frame_base_path, "frame0.exr"))
-    frame1 = read_exr_file(join(frame_base_path, "frame1.exr"))
+    frame0 = read_exr_file(join(input_path, "frame0.exr"))
+    frame1 = read_exr_file(join(input_path, "frame1.exr"))
 
     lamda = relative_gradient(frame0, frame1)
     alpha = (1 - lamda) * global_alpha + lamda
@@ -281,6 +283,7 @@ def loss_fn(img, gt, filter, aux_args):
     return jnp.mean((learnable_atrous_decomposition(img, filter, *aux_args) - gt) ** 2)
 
 if __name__ == '__main__':
+    os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
     USE_TEMPORAL_ACCU = True
 
     frame_illum = []
@@ -290,9 +293,9 @@ if __name__ == '__main__':
     frame_depth_grad = []
 
     for i in range(2):
-        frame_illum.append(read_exr_file(join(frame_base_path, "frame{}.exr".format(i))))
-        frame_depth.append(read_exr_file(join(frame_base_path, "frame{}_depth.exr".format(i)))[:, :, 0])
-        frame_normal.append(read_exr_file(join(frame_base_path, "frame{}_normal.exr".format(i))))
+        frame_illum.append(read_exr_file(join(input_path, "frame{}.exr".format(i))))
+        frame_depth.append(read_exr_file(join(input_path, "frame{}_depth.exr".format(i)))[:, :, 0])
+        frame_normal.append(read_exr_file(join(input_path, "frame{}_normal.exr".format(i))))
         frame_moments.append(compute_moments(frame_illum[i]))
         frame_depth_grad.append(compute_depth_gradient(frame_depth[i]))
 
@@ -350,11 +353,11 @@ if __name__ == '__main__':
         output_illum = learnable_atrous_decomposition(input_illum, atrous_filter, input_var, input_depth,
                                                                 input_normal, input_depth_grad,
                                                                 g_step_size=step_size)
-        write_exr_file("iter{}_color_ad.exr".format(i+1), output_illum)
+        write_exr_file(join(output_path, "iter{}_color_ad.exr".format(i+1)), output_illum)
 
 
         print("gradient computation...")
-        gt = read_exr_file("frame1_gt.exr")
+        gt = read_exr_file(join(input_path, "frame1_gt.exr"))
         aux_args = [input_var, input_depth, input_normal, input_depth_grad, step_size]
         # loss = loss_fn(input_illum, gt, atrous_filter, aux_args)
         grad_loss = grad(loss_fn, argnums=2)
@@ -364,7 +367,3 @@ if __name__ == '__main__':
         print("time taken for gradient computation {}".format(time.time() - start_time))
         print(gradient_filter)
         print(gradient_filter.shape)
-
-        # write_exr_file("iter{}_variance.exr".format(i+1), output_var)
-        # input_illum = deepcopy(output_illum)
-        # input_var = deepcopy(output_var)
