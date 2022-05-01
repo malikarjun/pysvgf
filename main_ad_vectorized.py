@@ -224,6 +224,7 @@ def tile_atrous_decomposition(illum, filter,
     weight_l_illum = jnp.abs(l_illum_center - l_illum_p)/phi_l_illum
     weight = jnp.exp(0.0 - jnp.maximum(weight_l_illum, 0.0) - jnp.maximum(weight_depth, 0.0)) * weight_normal
     weight *= filter
+    weight = jnp.maximum(1e-6, weight)
     weight = weight.at[radius, radius].set(0)
     # weight[radius, radius] = 0
 
