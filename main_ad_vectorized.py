@@ -265,7 +265,7 @@ def learnable_vmap_atrous_decomposition(illum, filter,
 
 
 def loss_fn(img, gt, filter, aux_args):
-    return jnp.mean((learnable_atrous_decomposition(img, filter, *aux_args) - gt) ** 2)
+    return jnp.mean((learnable_vmap_atrous_decomposition(img, filter, *aux_args) - gt) ** 2)
 
 
 def generate_idx(step, radius=2):
@@ -408,7 +408,7 @@ if __name__ == '__main__':
         phi_depth = jnp.reshape(tmp1 * tmp2, newshape=(ht * wt, 2*radius + 1, 2*radius+1))
         phi_normal = g_phi_normal * jnp.ones(ht * wt)
 
-        output_illum = learnable_vmap_atrous_decomposition(illum, atrous_filter,
+        output_illum = jit(learnable_vmap_atrous_decomposition)(illum, atrous_filter,
                                        depth_center, depth_p, phi_depth,
                                        normal_center, normal_p, phi_normal,
                                        l_illum_center, l_illum_p, phi_l_illum)
