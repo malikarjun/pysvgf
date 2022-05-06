@@ -292,36 +292,16 @@ def indices_array(n):
 
 
 def data_prep(a, step):
-	a_fl = []
 	orig_h, orig_w = a.shape[0], a.shape[1]
-
-	# print(type(a))
-	# exit(5)
 
 	offsets = generate_offsets(step, radius)
 
 	boundary = radius * step
-
 	boundary = radius * 2 ** 5
 	if len(a.shape) == 3:
 		a = jnp.pad(a, ((boundary, boundary), (boundary, boundary), (0, 0)))
-		# print("done padding")
-		h, w, c = a.shape
-		a_out = jnp.zeros(((orig_h * orig_w), 2 * radius + 1, 2 * radius + 1, c))
 	else:
 		a = jnp.pad(a, ((boundary, boundary), (boundary, boundary)))
-		h, w = a.shape
-		a_out = jnp.zeros(((orig_h * orig_w), 2 * radius + 1, 2 * radius + 1))
-
-	# def func(idx, x):
-	# 	i, j = idx // orig_w, idx % orig_w
-	# 	i += boundary
-	# 	j += boundary
-	# 	return x.at[idx].set(a[offsets[0] + i, offsets[1] + j])
-	#
-	# a_fl = lax.fori_loop(0, orig_w * orig_h, func, a_out)
-	#
-	# return jnp.array(a_fl)
 
 	def func_tile(idx):
 		i, j = idx[0], idx[1]
@@ -331,7 +311,6 @@ def data_prep(a, step):
 
 	# for now h = w, but might need to change this later
 	idxs = indices_array(orig_h)
-
 	return vmap(func_tile)(idxs)
 
 
@@ -403,7 +382,7 @@ def multiple_iter_atrous_decomposition(input_illum, input_var, input_depth, inpu
     return filtered_data[0]
     """
 
-	for i in range(5):
+	for i in range(1):
 		step_size = 1 << i
 
 		input_var = gaussian_filter(input_var)
