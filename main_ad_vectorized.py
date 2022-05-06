@@ -263,7 +263,7 @@ def loss_fn(img, gt, variance, filter, aux_args):
 	return jnp.mean(jnp.square(pred_img - gt))
 
 
-def generate_idx(step, radius=2):
+def generate_offsets(step, radius=2):
 	rows = np.zeros((2 * radius + 1, 2 * radius + 1)).astype(int)
 	cols = np.zeros((2 * radius + 1, 2 * radius + 1)).astype(int)
 
@@ -278,8 +278,17 @@ def generate_idx(step, radius=2):
 
 
 def generate_dist(step, radius=2):
-	rows, cols = generate_idx(step, radius)
+	rows, cols = generate_offsets(step, radius)
 	return jnp.linalg.norm(jnp.stack([rows, cols], axis=2), axis=2)
+
+# only works for square images
+# check out this answer for generic impl https://stackoverflow.com/a/44230705
+def indices_array(n):
+	r = np.arange(n)
+	out = np.empty((n, n, 2), dtype=int)
+	out[:, :, 0] = r[:, None]
+	out[:, :, 1] = r
+	return out.reshape(n*n, 2)
 
 
 def data_prep(a, step):
@@ -289,7 +298,7 @@ def data_prep(a, step):
 	# print(type(a))
 	# exit(5)
 
-	idxs = generate_idx(step, radius)
+	offsets = generate_offsets(step, radius)
 
 	boundary = radius * step
 
@@ -304,15 +313,26 @@ def data_prep(a, step):
 		h, w = a.shape
 		a_out = jnp.zeros(((orig_h * orig_w), 2 * radius + 1, 2 * radius + 1))
 
-	def func(idx, x):
-		i, j = idx // orig_w, idx % orig_w
+	# def func(idx, x):
+	# 	i, j = idx // orig_w, idx % orig_w
+	# 	i += boundary
+	# 	j += boundary
+	# 	return x.at[idx].set(a[offsets[0] + i, offsets[1] + j])
+	#
+	# a_fl = lax.fori_loop(0, orig_w * orig_h, func, a_out)
+	#
+	# return jnp.array(a_fl)
+
+	def func_tile(idx):
+		i, j = idx[0], idx[1]
 		i += boundary
 		j += boundary
-		return x.at[idx].set(a[idxs[0] + i, idxs[1] + j])
+		return a[offsets[0] + i, offsets[1] + j]
 
-	a_fl = lax.fori_loop(0, orig_w * orig_h, func, a_out)
+	# for now h = w, but might need to change this later
+	idxs = indices_array(orig_h)
 
-	return jnp.array(a_fl)
+	return vmap(func_tile)(idxs)
 
 
 def gaussian_filter(img):
@@ -383,7 +403,7 @@ def multiple_iter_atrous_decomposition(input_illum, input_var, input_depth, inpu
     return filtered_data[0]
     """
 
-	for i in range(1):
+	for i in range(5):
 		step_size = 1 << i
 
 		input_var = gaussian_filter(input_var)
@@ -505,9 +525,11 @@ if __name__ == '__main__':
 
 	gt = read_exr_file(join(input_path, "frame1_gt.exr"))
 
-	# output_illum = multiple_iter_atrous_decomposition(input_illum, input_var, input_depth, input_normal,
-	#                                                   input_depth_grad, atrous_filter)
-	# write_exr_file(join(output_path, "final_color_ad.exr"), output_illum)
+	output_illum = multiple_iter_atrous_decomposition(input_illum, input_var, input_depth, input_normal,
+	                                                  input_depth_grad, atrous_filter)
+	write_exr_file(join(output_path, "final_color_ad.exr"), output_illum)
+
+	# exit(2)
 
 	# TODO: the gradient computation is taking forever...
 	print("starting gradient computation...")
