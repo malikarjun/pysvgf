@@ -324,78 +324,14 @@ def multiple_iter_atrous_decomposition(input_illum, input_var, input_depth, inpu
 									   atrous_filter):
 	ht, wt, c = input_illum.shape
 
-	"""
-    def single_iter(i, data):
-        input_illum, input_var, input_depth, input_normal, input_depth_grad, atrous_filter = data
-        step_size = 1 << i
-
-        # input_var = gaussian_filter(input_var)
-        input_l_illum = luminance_vec(input_illum)
-
-        # data_prep_jit = jit(data_prep, static_argnums=1)
-
-        illum = data_prep(input_illum, step_size)
-        variance = data_prep(input_var, step=step_size)
-
-        l_illum_p = data_prep(input_l_illum, step=step_size)
-        depth_p = data_prep(input_depth, step=step_size)
-        normal_p = data_prep(input_normal, step=step_size)
-
-        l_illum_center = jnp.reshape(input_l_illum, newshape=(ht * wt))
-        depth_center = jnp.reshape(input_depth, newshape=(ht * wt))
-        normal_center = jnp.reshape(input_normal, newshape=(ht * wt, c))
-
-        phi_l_illum = g_phi_illum * jnp.sqrt(jnp.maximum(0.0, 1e-8 + input_var)).flatten()
-        tmp2 = jnp.expand_dims(g_phi_depth * jnp.maximum(1e-8, input_depth_grad), axis=(2, 3))
-        dist_vals = generate_dist(step=step_size)
-        tmp11 = jnp.repeat(
-            jnp.expand_dims(dist_vals, axis=0),
-            wt,
-            axis=0
-        )
-        tmp1 = jnp.repeat(
-            jnp.expand_dims(tmp11, axis=0),
-            ht,
-            axis=0
-        )
-        phi_depth = jnp.reshape(tmp1 * tmp2, newshape=(ht * wt, 2*radius + 1, 2*radius+1))
-        phi_normal = g_phi_normal * jnp.ones(ht * wt)
-
-        output_illum, output_variance = learnable_vmap_atrous_decomposition(illum, variance, atrous_filter,
-                                                                                 depth_center, depth_p, phi_depth,
-                                                                                 normal_center, normal_p, phi_normal,
-                                                                                 l_illum_center, l_illum_p, phi_l_illum)
-        output_illum = output_illum.reshape(input_illum.shape)
-        output_var = output_variance.reshape(input_var.shape)
-
-        data[0] = output_illum
-        data[1] = output_var
-        return data
-
-    data = [input_illum, input_var, input_depth, input_normal, input_depth_grad, atrous_filter]
-
-
-    # using fori_loop is very slow takes 4 minutes for 2 iterations. twice as slower compared to the regular python loop
-    filtered_data = lax.fori_loop(
-        0, 2, single_iter, data
-    )
-    return filtered_data[0]
-    """
-
-	for i in range(1):
+	def single_iter(i, data):
+		input_illum, input_var, input_depth, input_normal, input_depth_grad, atrous_filter = data
 		step_size = 1 << i
 
 		input_var = gaussian_filter(input_var)
 		input_l_illum = luminance_vec(input_illum)
 
-		# illum_np = np.load("illum.npy")
-
-		illum = data_prep(input_illum, step=step_size)
-
-		# illum_jax = jnp.array(illum)
-		#
-		# print(np.array_equal(jnp.array(illum), illum_np))
-
+		illum = data_prep(input_illum, step_size)
 		variance = data_prep(input_var, step=step_size)
 
 		l_illum_p = data_prep(input_l_illum, step=step_size)
@@ -419,21 +355,28 @@ def multiple_iter_atrous_decomposition(input_illum, input_var, input_depth, inpu
 			ht,
 			axis=0
 		)
-		phi_depth = jnp.reshape(tmp1 * tmp2, newshape=(ht * wt, 2 * radius + 1, 2 * radius + 1))
+		phi_depth = jnp.reshape(tmp1 * tmp2, newshape=(ht * wt, 2*radius + 1, 2*radius+1))
 		phi_normal = g_phi_normal * jnp.ones(ht * wt)
 
-		output_illum, output_variance = jit(learnable_vmap_atrous_decomposition)(illum, variance, atrous_filter,
+		output_illum, output_variance = learnable_vmap_atrous_decomposition(illum, variance, atrous_filter,
 																				 depth_center, depth_p, phi_depth,
 																				 normal_center, normal_p, phi_normal,
 																				 l_illum_center, l_illum_p, phi_l_illum)
 		output_illum = output_illum.reshape(input_illum.shape)
-		output_variance = output_variance.reshape(input_var.shape)
+		output_var = output_variance.reshape(input_var.shape)
 
-		# reuse filtered illum and variance for the next iteration
-		input_illum = output_illum
-		input_var = output_variance
+		data[0] = output_illum
+		data[1] = output_var
+		return data
 
-	return output_illum
+	data = [input_illum, input_var, input_depth, input_normal, input_depth_grad, atrous_filter]
+
+
+	# using fori_loop is very slow takes 4 minutes for 2 iterations. twice as slower compared to the regular python loop
+	filtered_data = lax.fori_loop(
+		0, 5, single_iter, data
+	)
+	return filtered_data[0]
 
 
 def loss_fn_multiple_iter(filter, gt, aux_args):
@@ -508,8 +451,6 @@ if __name__ == '__main__':
 	                                                  input_depth_grad, atrous_filter)
 	write_exr_file(join(output_path, "final_color_ad.exr"), output_illum)
 
-	# exit(2)
-
 	# TODO: the gradient computation is taking forever...
 	print("starting gradient computation...")
 
@@ -521,60 +462,3 @@ if __name__ == '__main__':
 	print("time for gradient computation {} s".format(time.time() - start_time))
 	print(gradient_filter.shape)
 	print(gradient_filter)
-
-	"""  
-    for i in tqdm(range(5)):
-        step_size = 1 << i
-
-        start_time = time.time()
-        input_var = gaussian_filter(input_var, sigma=3, truncate=3)
-        input_l_illum = luminance_vec(input_illum)
-
-        illum = data_prep(input_illum, step=step_size)
-        variance = data_prep(input_var, step=step_size)
-
-        l_illum_p = data_prep(input_l_illum, step=step_size)
-        depth_p = data_prep(input_depth, step=step_size)
-        normal_p = data_prep(input_normal, step=step_size)
-        print("time taken for data preparation {}".format(time.time() - start_time))
-
-        l_illum_center = jnp.reshape(input_l_illum, newshape=(ht * wt))
-        depth_center = jnp.reshape(input_depth, newshape=(ht * wt))
-        normal_center = jnp.reshape(input_normal, newshape=(ht * wt, c))
-
-        phi_l_illum = g_phi_illum * jnp.sqrt(jnp.maximum(0.0, 1e-8 + input_var)).flatten()
-        tmp2 = np.expand_dims(g_phi_depth * jnp.maximum(1e-8, input_depth_grad), axis=(2, 3))
-        dist_vals = generate_dist(step=step_size)
-        tmp11 = jnp.repeat(
-            np.expand_dims(dist_vals, axis=0),
-            wt,
-            axis=0
-        )
-        tmp1 = jnp.repeat(
-            np.expand_dims(tmp11, axis=0),
-            ht,
-            axis=0
-        )
-        phi_depth = jnp.reshape(tmp1 * tmp2, newshape=(ht * wt, 2*radius + 1, 2*radius+1))
-        phi_normal = g_phi_normal * jnp.ones(ht * wt)
-
-        output_illum, output_variance = jit(learnable_vmap_atrous_decomposition)(illum, variance, atrous_filter,
-                                                                                 depth_center, depth_p, phi_depth,
-                                                                                 normal_center, normal_p, phi_normal,
-                                                                                 l_illum_center, l_illum_p, phi_l_illum)
-        output_illum = output_illum.reshape(input_illum.shape)
-        output_variance = output_variance.reshape(input_var.shape)
-        write_exr_file(join(output_path, "iter{}_color_ad.exr".format(i+1)), output_illum)
-
-        aux_args = [depth_center, depth_p, phi_depth,
-                    normal_center, normal_p, phi_normal,
-                    l_illum_center, l_illum_p, phi_l_illum]
-
-        grad_loss = jit(grad(loss_fn, argnums=3))
-
-        gradient_filter = grad_loss(illum, gt, variance,  atrous_filter, aux_args)
-
-        # reuse filtered illum and variance for the next iteration
-        input_illum = output_illum
-        input_var = output_variance
- """
