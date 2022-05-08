@@ -14,11 +14,11 @@ g_phi_normal=128
 g_phi_depth=3
 global_alpha=0.2
 
-# def debug(i, j):
-#     return i == 220 and j == 145
-
 def debug(i, j):
-    return abs(i - 220) <= 1 and abs(j - 145) <= 1
+    return i == 210 and j == 125
+
+# def debug(i, j):
+#     return abs(i - 220) <= 1 and abs(j - 145) <= 1
 
 def luminance_vec(r, g, b):
     return 0.2126 * r + 0.7152 * g + 0.0722 * b

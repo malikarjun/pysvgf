@@ -1,4 +1,4 @@
-from file_utils import *
+import numpy as np
 
 
 def generate_atrous_kernel():
