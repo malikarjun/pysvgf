@@ -329,6 +329,8 @@ if __name__ == '__main__':
 
     USE_TEMPORAL_ACCU = True
 
+    os.makedirs(output_path, exist_ok=True)
+
     frame_illum = []
     frame_depth = []
     frame_normal = []
@@ -386,7 +388,9 @@ if __name__ == '__main__':
         output_illum, output_var = compute_atrous_decomposition(input_illum, input_var, frame_depth[curr_frame],
                                                                 frame_normal[curr_frame], frame_depth_grad[curr_frame],
                                                                 g_step_size=step_size)
-        write_exr_file(join(output_path, "iter{}_color.exr".format(i+1)), output_illum)
-        write_exr_file(join(output_path, "iter{}_variance.exr").format(i+1), output_var)
+        # write_exr_file(join(output_path, "iter{}_color.exr".format(i+1)), output_illum)
+        # write_exr_file(join(output_path, "iter{}_variance.exr").format(i+1), output_var)
         input_illum = deepcopy(output_illum)
         input_var = deepcopy(output_var)
+
+    write_exr_file(join(output_path, "final_color.exr"), output_illum)

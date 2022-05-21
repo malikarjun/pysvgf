@@ -413,6 +413,8 @@ if __name__ == '__main__':
 	os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 	USE_TEMPORAL_ACCU = True
 
+	os.makedirs(output_path, exist_ok=True)
+
 	frame_illum = []
 	frame_depth = []
 	frame_normal = []
@@ -429,7 +431,7 @@ if __name__ == '__main__':
 	atrous_filter = jnp.array(generate_atrous_kernel())
 
 	output_illum = asvgf(frame_illum, frame_depth, frame_normal, atrous_filter)
-	write_exr_file(join(output_path, "final_color_all_jax_fixed.exr"), output_illum)
+	write_exr_file(join(output_path, "final_color.exr"), output_illum)
 
 	print("starting gradient computation...")
 
