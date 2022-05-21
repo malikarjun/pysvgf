@@ -5,7 +5,7 @@ from tqdm import tqdm
 from scipy.ndimage import gaussian_filter
 from file_utils import *
 
-frame_base_path = "data"
+frame_base_path = "data_fixed"
 output_path = "output"
 inter_path = "intermediate_results"
 

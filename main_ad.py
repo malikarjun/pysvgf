@@ -12,13 +12,13 @@ import jax.numpy as jnp
 from learnable_utils import *
 from file_utils import *
 
-input_path = "data"
-output_path = "output_vec"
+input_path = "data_fixed"
+output_path = "output_ad"
 inter_path = "intermediate_results"
 
 g_phi_illum = 4
 g_phi_normal = 128
-g_phi_depth = 3
+g_phi_depth = 1
 global_alpha = 0.2
 radius = 2
 
@@ -359,7 +359,7 @@ def multiple_iter_atrous_decomposition(input_illum, input_var, input_depth, inpu
 
 	# using fori_loop is very slow takes 4 minutes for 2 iterations. twice as slower compared to the regular python loop
 	filtered_data = lax.fori_loop(
-		0, 5, single_iter, data
+		0, 4, single_iter, data
 	)
 	return filtered_data[0]
 
@@ -429,7 +429,7 @@ if __name__ == '__main__':
 	atrous_filter = jnp.array(generate_atrous_kernel())
 
 	output_illum = asvgf(frame_illum, frame_depth, frame_normal, atrous_filter)
-	write_exr_file(join(output_path, "final_color_all_jax.exr"), output_illum)
+	write_exr_file(join(output_path, "final_color_all_jax_fixed.exr"), output_illum)
 
 	print("starting gradient computation...")
 

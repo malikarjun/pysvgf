@@ -130,4 +130,8 @@ dmypy.json
 
 settings.json
 
-output_vec
+output
+output_ad
+
+.DS_Store
+.idea
