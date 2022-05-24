@@ -1,0 +1,9 @@
+meshes/cbox_luminaire.obj
+meshes/cbox_smallbox.obj
+meshes/cbox_floor.obj
+meshes/cbox_ceiling.obj
+meshes/cbox_back.obj
+meshes/cbox_greenwall.obj
+meshes/cbox_redwall.obj
+meshes/cbox_smallbox.obj
+meshes/cbox_largebox.obj

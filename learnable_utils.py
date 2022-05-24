@@ -15,6 +15,8 @@ def generate_atrous_kernel():
 
 	return atrous_kernel
 
+def luminance(rgb):
+	return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
 
 # if __name__ == "__main__":
 # 	print(generate_atrous_kernel())

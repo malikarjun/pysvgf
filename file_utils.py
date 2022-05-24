@@ -1,7 +1,31 @@
 import cv2
 import OpenEXR, array
-from os.path import exists
+from os.path import exists, join, basename
 import numpy as np
+import pywavefront
+import shutil
+from glob import glob
+
+scene_path = "/Users/mallikarjunswamy/imp/acads/courses/winter-2022/CSE_272/lajolla_public/scenes/cbox"
+
+
+
+def load_models(model_fnames):
+    models = []
+    for fname in model_fnames:
+        if fname == "":
+            models.append(None)
+        else:
+            scene = pywavefront.Wavefront(join(scene_path, fname), collect_faces=True)
+            models.append(scene)
+
+    return models
+
+def read_txt_file(filename):
+    lines = None
+    with open(filename) as f:
+        lines = [line.strip() for line in f.readlines()]
+    return lines
 
 def get_file(filename):
     if exists(filename):
