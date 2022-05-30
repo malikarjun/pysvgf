@@ -8,7 +8,9 @@ from glob import glob
 
 scene_path = "/Users/mallikarjunswamy/imp/acads/courses/winter-2022/CSE_272/lajolla_public/scenes/cbox"
 
-
+def load_vbuffer(filename):
+    val = np.load(filename)
+    return np.stack([val[:, :, 0].T, val[:, :, 1].T, val[:, :, 2].T, val[:, :, 3].T], axis=2)
 
 def load_models(model_fnames):
     models = []

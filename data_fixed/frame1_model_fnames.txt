@@ -1,5 +1,5 @@
 meshes/cbox_luminaire.obj
-meshes/cbox_smallbox.obj
+meshes/cbox_luminaire_side.obj
 meshes/cbox_floor.obj
 meshes/cbox_ceiling.obj
 meshes/cbox_back.obj
