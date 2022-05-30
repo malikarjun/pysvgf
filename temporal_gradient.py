@@ -1,3 +1,4 @@
+import time
 from os.path import exists, join
 import os
 import numpy as np
@@ -9,6 +10,7 @@ from tqdm import tqdm
 
 input_path = "data_fixed"
 output_path = "output_ad"
+inter_path = "intermediate_results/temp_grad"
 
 def debug(y, x):
 	return y == 270 and x == 51
@@ -82,9 +84,6 @@ def compute_temporal_gradient(prev_frame=0, curr_frame=1, downsample=3):
 
 			# if not debug(y, x):
 			# 	continue
-			#
-			# val = illum_lst[prev_frame][y, x]
-
 
 			# intra stratum pixel loc for prev frame
 			prev_isy, prev_isx = get_intra_stratum_loc(downsample=downsample)
@@ -129,12 +128,13 @@ def compute_temporal_gradient(prev_frame=0, curr_frame=1, downsample=3):
 
 			if accept:
 
-				# if visited[curr_sx, curr_sy]:
-				# 	continue
+				if visited[curr_sy, curr_sx]:
+					continue
 
 				visited[curr_sy, curr_sx] = True
 
 				denom = max(max(l_curr, l_prev), 1e-8)
+				# TODO: Christoph is doing some clamping between 0 and 200. Is that really needed?
 				temp_grad[curr_sy, curr_sx] = np.abs(l_curr - l_prev) / denom
 
 
@@ -168,16 +168,57 @@ def compute_temporal_gradient(prev_frame=0, curr_frame=1, downsample=3):
 
 	return temp_grad, lillum, variance, depth, normal, depth_gradient
 
+# reconstruct temporal gradient using max pooling in the stratum resolution
+def reconstruct_temp_gradient(temp_grad, downsample=3, grad_filter_radius=2):
+	down_h, down_w = temp_grad.shape[0], temp_grad.shape[1]
+	orig_h, orig_w = down_h * downsample, down_w * downsample
+	recon_temp_grad = np.zeros((orig_h, orig_w))
+
+	for y in tqdm(range(orig_h)):
+		for x in range(orig_w):
+			# stratum indices
+			sy, sx = y // downsample, x // downsample
+
+
+			for yy in range(-grad_filter_radius, grad_filter_radius):
+				for xx in range(-grad_filter_radius, grad_filter_radius):
+
+					# local stratum indices used within this loop nest
+					lsy, lsx = sy + yy, sx + xx
+
+					if 0 <= lsy < down_h and 0 <= lsx < down_w:
+						recon_temp_grad[y, x] = max(recon_temp_grad[y, x], temp_grad[lsy, lsx])
+
+	return recon_temp_grad
 
 
 
 if __name__=="__main__":
 	os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
+	random.seed(int(time.time()))
 
-	temp_grad, lillum, variance, depth, normal, depth_gradient = compute_temporal_gradient()
-	write_exr_file(join(output_path, "temp_grad.exr"), temp_grad)
-	write_exr_file("tmp_lillum.exr", lillum)
-	write_exr_file("tmp_variance.exr", variance)
-	write_exr_file("tmp_depth.exr", depth)
-	write_exr_file("tmp_normal.exr", normal)
-	write_exr_file("tmp_depth_gradient.exr", depth_gradient)
+	if not exists(join(output_path, "temp_grad.exr")):
+		temp_grad, lillum, variance, depth, normal, depth_gradient = compute_temporal_gradient()
+		write_exr_file(join(output_path, "temp_grad.exr"), temp_grad)
+		write_exr_file(join(inter_path, "lillum.exr"), lillum)
+		write_exr_file(join(inter_path, "variance.exr"), variance)
+		write_exr_file(join(inter_path, "depth.exr"), depth)
+		write_exr_file(join(inter_path, "depth_gradient.exr"), depth_gradient)
+		write_exr_file(join(inter_path, "normal.exr"), normal)
+	else:
+		temp_grad = read_exr_file(join(output_path, "temp_grad.exr"), single_channel=True)
+		lillum = read_exr_file(join(inter_path, "lillum.exr"), single_channel=True)
+		variance = read_exr_file(join(inter_path, "variance.exr"), single_channel=True)
+		depth = read_exr_file(join(inter_path, "depth.exr"), single_channel=True)
+		depth_gradient = read_exr_file(join(inter_path, "depth_gradient.exr"), single_channel=True)
+		normal = read_exr_file(join(inter_path, "normal.exr"))
+
+	radius = 1
+	filtered_temp_grad = multiple_iter_atrous_decomposition(temp_grad, variance, depth, normal, depth_gradient,
+															generate_box_filter(radius=radius), radius=radius,
+															compute_lum=False)
+
+	write_exr_file(join(output_path, "filtered_temp_grad.exr"), filtered_temp_grad)
+
+	recon_filtered_temp_grad = reconstruct_temp_gradient(np.asarray(filtered_temp_grad))
+	write_exr_file(join(output_path, "recon_filtered_temp_grad.exr"), recon_filtered_temp_grad)

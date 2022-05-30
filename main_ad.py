@@ -252,12 +252,12 @@ if __name__ == '__main__':
 
 	for i in range(2):
 		frame_illum.append(read_exr_file(join(input_path, "frame{}.exr".format(i))))
-		frame_depth.append(read_exr_file(join(input_path, "frame{}_depth.exr".format(i)))[:, :, 0])
+		frame_depth.append(read_exr_file(join(input_path, "frame{}_depth.exr".format(i)), single_channel=True))
 		frame_normal.append(read_exr_file(join(input_path, "frame{}_normal.exr".format(i))))
 
 	prev_frame = 0
 	curr_frame = 1
-	atrous_filter = jnp.array(generate_atrous_kernel())
+	atrous_filter = jnp.array(generate_atrous_filter())
 
 	output_illum = asvgf(frame_illum, frame_depth, frame_normal, atrous_filter)
 	write_exr_file(join(output_path, "final_color.exr"), output_illum)

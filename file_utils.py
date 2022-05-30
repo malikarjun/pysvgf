@@ -34,10 +34,13 @@ def get_file(filename):
         return np.load(filename)
     return None
 
-def read_exr_file(filepath):
+def read_exr_file(filepath, single_channel=False):
     img = cv2.imread(filepath, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
     if len(img.shape) == 3:
         img = img[:, :, ::-1]
+
+    if single_channel:
+        img = img[:, :, 0]
     return img
 
 def write_exr_file(filepath, data):

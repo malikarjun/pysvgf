@@ -23,7 +23,7 @@ def ddx(buffer, x, y):
 	return max(abs(buffer[y, x] - buffer[y, x+1]), abs(buffer[y, x] - buffer[y, x+1]))
 
 
-def generate_atrous_kernel():
+def generate_atrous_filter():
 	kernel_weights = np.array([1.0, 2.0 / 3.0, 1.0 / 6.0])
 
 	size = 5
@@ -36,6 +36,10 @@ def generate_atrous_kernel():
 			# sum += atrous_kernel[i, j]
 
 	return atrous_kernel
+
+def generate_box_filter(radius=1):
+	size = 2*radius + 1
+	return np.ones((size, size))
 
 def luminance(rgb):
 	return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
@@ -60,6 +64,18 @@ def luminance(rgb):
 
 # only works for square images
 # check out this answer for generic impl https://stackoverflow.com/a/44230705
+'''
+For n = 2, return out as the following array
+out[:, :, 0]
+|0|0|
+|1|1|
+
+out[:, :, 1]
+|0|1|
+|0|1|
+
+out is further reshaped so that it can be passed to vmap
+'''
 def indices_array(n):
 	r = np.arange(n)
 	out = np.empty((n, n, 2), dtype=int)
@@ -92,7 +108,7 @@ def data_prep(a, step=1, radius=2):
 	offsets = generate_offsets(step, radius)
 
 	boundary = radius * step
-	boundary = radius * 2 ** 5
+
 	if len(a.shape) == 3:
 		a = jnp.pad(a, ((boundary, boundary), (boundary, boundary), (0, 0)))
 	else:
@@ -122,9 +138,13 @@ def tile_atrous_decomposition(illum, variance, filter,
 	weight = jnp.exp(0.0 - jnp.maximum(weight_l_illum, 0.0) - jnp.maximum(weight_depth, 0.0)) * weight_normal
 	weight *= filter
 	weight = jnp.maximum(1e-6, weight)
+	# TODO: why should we ignore the middle element? is it taken into account before this fn is called?
 	weight = weight.at[radius, radius].set(0)
 
-	filtered_illum = jnp.sum(illum * jnp.expand_dims(weight, axis=2), axis=(0, 1)) / jnp.sum(weight)
+	if len(illum.shape) == 3:
+		weight = jnp.expand_dims(weight, axis=2)
+
+	filtered_illum = jnp.sum(illum * weight, axis=(0, 1)) / jnp.sum(weight)
 
 	var_weight = jnp.square(weight)
 	filtered_variance = jnp.sum(variance * var_weight) / jnp.sum(var_weight)
@@ -144,30 +164,35 @@ def learnable_vmap_atrous_decomposition(illum, variance, filter,
 
 
 def multiple_iter_atrous_decomposition(input_illum, input_var, input_depth, input_normal, input_depth_grad,
-									   atrous_filter, g_phi_illum=4, g_phi_normal=128, g_phi_depth=1, radius=2):
-	ht, wt, c = input_illum.shape
+									   atrous_filter, g_phi_illum=4, g_phi_normal=128, g_phi_depth=1, radius=2,
+									   compute_lum=True):
+	ht, wt = input_illum.shape[0], input_illum.shape[1]
 
 	def single_iter(i, data):
 		input_illum, input_var, input_depth, input_normal, input_depth_grad, atrous_filter = data
 		step_size = 1 << i
 
 		input_var = gaussian_filter(input_var)
-		input_l_illum = luminance_vec(input_illum)
+		if compute_lum:
+			input_l_illum = luminance_vec(input_illum)
+		else:
+			# illum is already passed as lillum
+			input_l_illum = input_illum
 
-		illum = data_prep(input_illum, step_size)
-		variance = data_prep(input_var, step=step_size)
+		illum = data_prep(input_illum, step=step_size, radius=radius)
+		variance = data_prep(input_var, step=step_size, radius=radius)
 
-		l_illum_p = data_prep(input_l_illum, step=step_size)
-		depth_p = data_prep(input_depth, step=step_size)
-		normal_p = data_prep(input_normal, step=step_size)
+		l_illum_p = data_prep(input_l_illum, step=step_size, radius=radius)
+		depth_p = data_prep(input_depth, step=step_size, radius=radius)
+		normal_p = data_prep(input_normal, step=step_size, radius=radius)
 
 		l_illum_center = jnp.reshape(input_l_illum, newshape=(ht * wt))
 		depth_center = jnp.reshape(input_depth, newshape=(ht * wt))
-		normal_center = jnp.reshape(input_normal, newshape=(ht * wt, c))
+		normal_center = jnp.reshape(input_normal, newshape=(ht * wt, 3))
 
 		phi_l_illum = g_phi_illum * jnp.sqrt(jnp.maximum(0.0, 1e-8 + input_var)).flatten()
 		tmp2 = jnp.expand_dims(g_phi_depth * jnp.maximum(1e-8, input_depth_grad), axis=(2, 3))
-		dist_vals = generate_dist(step=step_size)
+		dist_vals = generate_dist(step=step_size, radius=radius)
 		tmp11 = jnp.repeat(
 			jnp.expand_dims(dist_vals, axis=0),
 			wt,
@@ -194,11 +219,15 @@ def multiple_iter_atrous_decomposition(input_illum, input_var, input_depth, inpu
 
 	data = [input_illum, input_var, input_depth, input_normal, input_depth_grad, atrous_filter]
 
+	for i in range(4):
+		data = single_iter(i, data)
+	filtered_data = data
 
-	# using fori_loop is very slow takes 4 minutes for 2 iterations. twice as slower compared to the regular python loop
-	filtered_data = lax.fori_loop(
-		0, 4, single_iter, data
-	)
+	# The following is slightly faster on CPU but can't be used because it fails with step_size concretization error
+	# for more details, just uncomment the following lines and run the code
+	# filtered_data = lax.fori_loop(
+	# 	0, 4, single_iter, data
+	# )
 	return filtered_data[0]
 
 
