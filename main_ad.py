@@ -87,10 +87,17 @@ def compute_moments(frame_illum):
 		moments.append(jnp.stack([moment_1, moment_2], axis=2))
 	return moments
 
+def tile_depth_grad(depth):
+	return jnp.maximum(ddx(depth, 1, 1), ddy(depth, 1, 1))
+
+
 def compute_depth_gradient(frame_depth):
 	depth_gradients = []
 	for depth in frame_depth:
-		depth_gradients.append(jnp.ones(depth.shape))
+		depth_tiled = data_prep(depth, step=1, radius=1)
+		depth_grad = vmap(tile_depth_grad)(depth_tiled)
+		depth_gradients.append(jnp.reshape(depth_grad, newshape=depth.shape))
+
 	return depth_gradients
 
 def compute_adaptive_alpha(frame_illum, frame_depth, frame_normal, frame_depth_grad, frame=1):

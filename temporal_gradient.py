@@ -118,7 +118,7 @@ def compute_temporal_gradient(prev_frame=0, curr_frame=1, downsample=3):
 			accept = True
 			_curr_depth = curr_depth[curr_y, curr_x]
 			_prev_depth = prev_depth[prev_y, prev_x]
-			_curr_depth_gradient = max(ddx(curr_depth, curr_x, curr_y), ddy(curr_depth, curr_x, curr_y))
+			_curr_depth_gradient = max(ddx_(curr_depth, curr_x, curr_y), ddy_(curr_depth, curr_x, curr_y))
 
 			accept = accept and test_reprojected_depth(_prev_depth, _curr_depth, _curr_depth_gradient)
 

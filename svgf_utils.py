@@ -15,12 +15,22 @@ def test_reprojected_normal_vec(n1, n2):
 def test_reprojected_normal(n1, n2):
 	return jnp.sum(n1 * n2) > 0.9
 
-def ddy(buffer, x, y):
+def ddy_(buffer, x, y):
 	return max(abs(buffer[y, x] - buffer[y-1, x]), abs(buffer[y, x] - buffer[y+1, x]))
 
 
-def ddx(buffer, x, y):
+def ddx_(buffer, x, y):
 	return max(abs(buffer[y, x] - buffer[y, x+1]), abs(buffer[y, x] - buffer[y, x+1]))
+
+# TODO: the convention followed for array indexing using variables x and y might be different for main_ad and
+#  temporal_gradient might be different. But depth gradient is symmetrical overall so this convection shouldn't matter
+#  as such.
+def ddy(buffer, x, y):
+	return jnp.maximum(jnp.abs(buffer[y, x] - buffer[y-1, x]), jnp.abs(buffer[y, x] - buffer[y+1, x]))
+
+
+def ddx(buffer, x, y):
+	return jnp.maximum(jnp.abs(buffer[y, x] - buffer[y, x+1]), jnp.abs(buffer[y, x] - buffer[y, x+1]))
 
 
 def generate_atrous_filter():
