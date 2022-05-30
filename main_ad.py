@@ -100,12 +100,15 @@ def compute_depth_gradient(frame_depth):
 
 	return depth_gradients
 
-def compute_adaptive_alpha(frame_illum, frame_depth, frame_normal, frame_depth_grad, frame=1):
+def compute_adaptive_alpha(temp_gradient, frame_illum, frame_depth, frame_normal, frame_depth_grad, frame=1):
 
-	frame0 = frame_illum[frame-1]
-	frame1 = frame_illum[frame]
+	# frame0 = frame_illum[frame-1]
+	# frame1 = frame_illum[frame]
+	# lamda = relative_gradient(frame0, frame1)
+	# write_exr_file("incorrect_temp_gradient.exr", np.asarray(lamda))
 
-	lamda = relative_gradient(frame0, frame1)
+	lamda = jnp.array(temp_gradient)
+
 	alpha = (1 - lamda) * global_alpha + lamda
 
 	prev_depth = frame_depth[frame - 1]
@@ -200,13 +203,14 @@ def spatial_variance_computation(input_illum, input_var, input_depth, input_norm
 
 
 
-def asvgf(frame_illum, frame_depth, frame_normal, filter):
+def asvgf(frame_illum, frame_depth, frame_normal, temp_gradient, filter):
 	frame_moments = compute_moments(frame_illum)
 	frame_depth_grad = compute_depth_gradient(frame_depth)
 
 	curr_frame = 1
 
-	adaptive_alpha, disocclusion = compute_adaptive_alpha(frame_illum, frame_depth, frame_normal, frame_depth_grad)
+	adaptive_alpha, disocclusion = compute_adaptive_alpha(temp_gradient, frame_illum,
+														  frame_depth, frame_normal, frame_depth_grad)
 
 	integrated_illum, integrated_moments, integrated_variance = temporal_integration(frame_illum, frame_moments,
 																					 adaptive_alpha)
@@ -257,6 +261,7 @@ if __name__ == '__main__':
 	frame_moments = []
 	frame_depth_grad = []
 
+	temp_gradient = read_exr_file(join(output_path, "recon_filtered_temp_grad.exr"), single_channel=True)
 	for i in range(2):
 		frame_illum.append(read_exr_file(join(input_path, "frame{}.exr".format(i))))
 		frame_depth.append(read_exr_file(join(input_path, "frame{}_depth.exr".format(i)), single_channel=True))
@@ -266,13 +271,13 @@ if __name__ == '__main__':
 	curr_frame = 1
 	atrous_filter = jnp.array(generate_atrous_filter())
 
-	output_illum = asvgf(frame_illum, frame_depth, frame_normal, atrous_filter)
+	output_illum = asvgf(frame_illum, frame_depth, frame_normal, temp_gradient, atrous_filter)
 	write_exr_file(join(output_path, "final_color.exr"), output_illum)
 
 	print("starting gradient computation...")
 
 	gt = read_exr_file(join(input_path, "frame1_gt.exr"))
-	aux_args = [frame_illum, frame_depth, frame_normal]
+	aux_args = [frame_illum, frame_depth, frame_normal, temp_gradient]
 
 	start_time = time.time()
 	grad_loss = jit(grad(loss_fn_multiple_iter))
