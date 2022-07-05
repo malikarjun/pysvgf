@@ -71,11 +71,7 @@ def compute_weight(depth_center, depth_p, phi_depth, normal_center, normal_p, ph
 	return weight_illum
 
 
-def convert_to_np(lst):
-	return [np.array(item) for item in lst]
 
-def convert_to_jnp(lst):
-	return [jnp.array(item) for item in lst]
 
 
 
@@ -202,7 +198,7 @@ def spatial_variance_computation(input_illum, input_var, input_depth, input_norm
 					 jnp.reshape(input_var, newshape=(ht * wt)))
 
 
-
+# TODO : pass history_len 2D array to increment history length unless occlusion is encountered
 def asvgf(frame_illum, frame_depth, frame_normal, temp_gradient, filter):
 	frame_moments = compute_moments(frame_illum)
 	frame_depth_grad = compute_depth_gradient(frame_depth)
@@ -212,6 +208,12 @@ def asvgf(frame_illum, frame_depth, frame_normal, temp_gradient, filter):
 	adaptive_alpha, disocclusion = compute_adaptive_alpha(temp_gradient, frame_illum,
 														  frame_depth, frame_normal, frame_depth_grad)
 
+	# we are doing temporal integration for all the pixels, later we will do spatial filtering for pixels which
+	# encounter disocclusion
+	# TODO: moment and frame_illum global accumulators need to be passed to integrate over more than 2 frames
+	# TODO: try tap filtering, if no tap is found then set C'_i = C_i (disocclusion case). Note this is different than
+	#  what we are doing for the moments/variance, we spatially filter to find a variance instead of just setting it
+	#  to the previous value
 	integrated_illum, integrated_moments, integrated_variance = temporal_integration(frame_illum, frame_moments,
 																					 adaptive_alpha)
 
@@ -221,12 +223,8 @@ def asvgf(frame_illum, frame_depth, frame_normal, temp_gradient, filter):
 	]
 	input_illum, input_var, input_depth, input_normal, input_depth_grad, input_moments = convert_to_jnp(input_list)
 
-	# input_illum = jnp.array(frame_illum[curr_frame])
-	# input_var = jnp.array(integrated_variance)
-	# input_depth = jnp.array(frame_depth[curr_frame])
-	# input_normal = jnp.array(frame_normal[curr_frame])
-	# input_depth_grad = jnp.array(frame_depth_grad[curr_frame])
-	# input_moments = jnp.array(frame_moments[curr_frame])
+	# this function only updates the pixels where there is a disocclusion and retains the values computed using
+	# temporal_integration function for the rest
 	input_var = spatial_variance_computation(input_illum, input_var, input_depth, input_normal, input_depth_grad,
 													 input_moments, disocclusion)
 
@@ -235,6 +233,9 @@ def asvgf(frame_illum, frame_depth, frame_normal, temp_gradient, filter):
 
 	output_illum = multiple_iter_atrous_decomposition(integrated_illum, input_var, input_depth, input_normal,
 													  input_depth_grad, filter)
+
+	# TODO : return accumulated color and moments as well, they will again be passed as input to the next invocation of
+	#  this function. They work as global accumulator variables.
 	return output_illum
 
 
@@ -262,6 +263,7 @@ if __name__ == '__main__':
 	frame_depth_grad = []
 
 	temp_gradient = read_exr_file(join(output_path, "recon_filtered_temp_grad.exr"), single_channel=True)
+	# TODO: render 10 frames, first frame with light on and the rest with light off
 	for i in range(2):
 		frame_illum.append(read_exr_file(join(input_path, "frame{}.exr".format(i))))
 		frame_depth.append(read_exr_file(join(input_path, "frame{}_depth.exr".format(i)), single_channel=True))

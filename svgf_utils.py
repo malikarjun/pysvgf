@@ -3,6 +3,12 @@ from jax import grad, jit, lax, vmap
 import jax.scipy as jsp
 import jax.numpy as jnp
 
+def convert_to_np(lst):
+	return [np.array(item) for item in lst]
+
+def convert_to_jnp(lst):
+	return [jnp.array(item) for item in lst]
+
 
 def test_reprojected_depth(z1, z2, dz):
 	z_diff = abs(z1 - z2)
@@ -86,12 +92,12 @@ out[:, :, 1]
 
 out is further reshaped so that it can be passed to vmap
 '''
-def indices_array(n):
-	r = np.arange(n)
-	out = np.empty((n, n, 2), dtype=int)
+def indices_array(n, start=0, step=1):
+	r = np.arange(start=start, stop=start + n,  step=step)
+	out = np.empty((n//step, n//step, 2), dtype=int)
 	out[:, :, 0] = r[:, None]
 	out[:, :, 1] = r
-	return out.reshape(n*n, 2)
+	return out.reshape((n//step) * (n//step), 2)
 
 
 def generate_offsets(step, radius=2):
@@ -242,4 +248,4 @@ def multiple_iter_atrous_decomposition(input_illum, input_var, input_depth, inpu
 
 
 # if __name__ == "__main__":
-# 	print(generate_atrous_kernel())
+# 	print(indices_array(4))

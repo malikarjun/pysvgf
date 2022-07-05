@@ -5,6 +5,7 @@ import numpy as np
 import pywavefront
 import shutil
 from glob import glob
+import jax.numpy as jnp
 
 scene_path = "/Users/mallikarjunswamy/imp/acads/courses/winter-2022/CSE_272/lajolla_public/scenes/cbox"
 
@@ -19,7 +20,8 @@ def load_models(model_fnames):
             models.append(None)
         else:
             scene = pywavefront.Wavefront(join(scene_path, fname), collect_faces=True)
-            models.append(scene)
+            jax_scene = dict(vertices=scene.vertices, faces=scene.mesh_list[0].faces)
+            models.append(jax_scene)
 
     return models
 
@@ -34,13 +36,17 @@ def get_file(filename):
         return np.load(filename)
     return None
 
-def read_exr_file(filepath, single_channel=False):
+def read_exr_file(filepath, single_channel=False, jax_array=False):
     img = cv2.imread(filepath, cv2.IMREAD_ANYCOLOR | cv2.IMREAD_ANYDEPTH)
     if len(img.shape) == 3:
         img = img[:, :, ::-1]
 
     if single_channel:
         img = img[:, :, 0]
+
+    if jax_array:
+        img = jnp.array(img)
+
     return img
 
 def write_exr_file(filepath, data):
