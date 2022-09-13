@@ -7,7 +7,7 @@ import shutil
 from glob import glob
 import jax.numpy as jnp
 
-scene_path = "/Users/mallikarjunswamy/imp/acads/courses/winter-2022/CSE_272/lajolla_public/scenes/cbox"
+scene_path = "/Users/mallikarjunswamy/work/acads/courses/winter-2022/CSE_272/lajolla_public/scenes/cbox"
 
 def load_vbuffer(filename):
     val = np.load(filename)
