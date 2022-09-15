@@ -38,6 +38,12 @@ def ddy(buffer, x, y):
 def ddx(buffer, x, y):
 	return jnp.maximum(jnp.abs(buffer[y, x] - buffer[y, x+1]), jnp.abs(buffer[y, x] - buffer[y, x+1]))
 
+def tile_depth_grad(depth):
+	return jnp.maximum(ddx(depth, 1, 1), ddy(depth, 1, 1))
+
+def compute_depth_gradient(depth):
+	depth_tiled = data_prep(depth, step=1, radius=1)
+	return vmap(tile_depth_grad)(depth_tiled)
 
 def generate_atrous_filter():
 	kernel_weights = np.array([1.0, 2.0 / 3.0, 1.0 / 6.0])

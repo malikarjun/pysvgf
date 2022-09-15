@@ -144,7 +144,7 @@ def data_prep(a, step=1, radius=2):
 # all arguments are of size (2*radius + 1, 2*radius + 1), where radius is 2
 # all arguments prefixed with `phi` are scalars..
 # this function will be vmapped over the entire 2D image space for high performance on GPU
-def tile_atrous_decomposition(illum, variance, filter,
+def tile_atrous_grad_decomposition(temp_grad, lum, variance, filter,
 							  depth_center, depth_p, phi_depth,
 							  normal_center, normal_p, phi_normal,
 							  l_illum_center, l_illum_p, phi_l_illum, radius=2):
@@ -157,47 +157,47 @@ def tile_atrous_decomposition(illum, variance, filter,
 	# TODO: why should we ignore the middle element? is it taken into account before this fn is called?
 	weight = weight.at[radius, radius].set(0)
 
-	if len(illum.shape) == 3:
-		weight = jnp.expand_dims(weight, axis=2)
-
-	filtered_illum = jnp.sum(illum * weight, axis=(0, 1)) / jnp.sum(weight)
+	filtered_lum = jnp.sum(lum * weight, axis=(0, 1)) / jnp.sum(weight)
+	filtered_temp_grad = jnp.sum(temp_grad * weight, axis=(0, 1)) / jnp.sum(weight)
 
 	var_weight = jnp.square(weight)
 	filtered_variance = jnp.sum(variance * var_weight) / jnp.sum(var_weight)
 
-	return filtered_illum, filtered_variance
+	return filtered_temp_grad, filtered_lum, filtered_variance
 
 
-def learnable_vmap_atrous_decomposition(illum, variance, filter,
+def learnable_vmap_atrous_grad_decomposition(temp_grad, lum, variance, filter,
 										depth_center, depth_p, phi_depth,
 										normal_center, normal_p, phi_normal,
 										l_illum_center, l_illum_p, phi_l_illum):
-	filter = jnp.repeat(jnp.expand_dims(filter, axis=0), len(illum), axis=0)
-	return vmap(tile_atrous_decomposition)(illum, variance, filter,
+	filter = jnp.repeat(jnp.expand_dims(filter, axis=0), len(lum), axis=0)
+	return vmap(tile_atrous_grad_decomposition)(temp_grad, lum, variance, filter,
 										   depth_center, depth_p, phi_depth,
 										   normal_center, normal_p, phi_normal,
 										   l_illum_center, l_illum_p, phi_l_illum)
 
 
-def multiple_iter_atrous_decomposition(input_illum, input_var, input_depth, input_normal, input_depth_grad,
-									   atrous_filter, g_phi_illum=4, g_phi_normal=128, g_phi_depth=1, radius=2):
-	ht, wt = input_illum.shape[0], input_illum.shape[1]
+# input_temp_grad has two values numer and denom, they are both filtered separately
+def multiple_iter_atrous_grad_decomposition(input_temp_grad, input_lum, input_var, input_depth, input_normal,
+											input_depth_grad, atrous_filter, g_phi_illum=4, g_phi_normal=128,
+											g_phi_depth=1, radius=2):
+	ht, wt = input_lum.shape[0], input_lum.shape[1]
 
 	def single_iter(i, data):
-		input_illum, input_var, input_depth, input_normal, input_depth_grad, atrous_filter = data
+		input_temp_grad, input_lum, input_var, input_depth, input_normal, input_depth_grad, atrous_filter = data
 		step_size = 1 << i
 
-		input_var = gaussian_filter(input_var)
-		input_l_illum = luminance_vec(input_illum)
+		# input_var = gaussian_filter(input_var)
 
-		illum = data_prep(input_illum, step=step_size, radius=radius)
+		temp_grad = data_prep(input_temp_grad, step=step_size, radius=radius)
+		lum = data_prep(input_lum, step=step_size, radius=radius)
 		variance = data_prep(input_var, step=step_size, radius=radius)
 
-		l_illum_p = data_prep(input_l_illum, step=step_size, radius=radius)
+		lum_p = data_prep(input_lum, step=step_size, radius=radius)
 		depth_p = data_prep(input_depth, step=step_size, radius=radius)
 		normal_p = data_prep(input_normal, step=step_size, radius=radius)
 
-		l_illum_center = jnp.reshape(input_l_illum, newshape=(ht * wt))
+		lum_center = jnp.reshape(input_lum, newshape=(ht * wt))
 		depth_center = jnp.reshape(input_depth, newshape=(ht * wt))
 		normal_center = jnp.reshape(input_normal, newshape=(ht * wt, 3))
 
@@ -217,30 +217,23 @@ def multiple_iter_atrous_decomposition(input_illum, input_var, input_depth, inpu
 		phi_depth = jnp.reshape(tmp1 * tmp2, newshape=(ht * wt, 2*radius + 1, 2*radius+1))
 		phi_normal = g_phi_normal * jnp.ones(ht * wt)
 
-		output_illum, output_variance = learnable_vmap_atrous_decomposition(illum, variance, atrous_filter,
-																				 depth_center, depth_p, phi_depth,
-																				 normal_center, normal_p, phi_normal,
-																				 l_illum_center, l_illum_p, phi_l_illum)
-		output_illum = output_illum.reshape(input_illum.shape)
+		output_temp_grad, output_illum, output_variance = learnable_vmap_atrous_grad_decomposition(
+			temp_grad, lum, variance, atrous_filter, depth_center, depth_p, phi_depth, normal_center, normal_p,
+			phi_normal, lum_center, lum_p, phi_l_illum)
+
+		output_temp_grad = output_temp_grad.reshape(input_temp_grad.shape)
+		output_illum = output_illum.reshape(input_lum.shape)
 		output_var = output_variance.reshape(input_var.shape)
 
-		data[0] = output_illum
-		data[1] = output_var
+		data[0] = output_temp_grad
+		data[1] = output_illum
+		data[2] = output_var
 		return data
 
-	data = [input_illum, input_var, input_depth, input_normal, input_depth_grad, atrous_filter]
+	data = [input_temp_grad, input_lum, input_var, input_depth, input_normal, input_depth_grad, atrous_filter]
 
 	for i in range(4):
 		data = single_iter(i, data)
 	filtered_data = data
 
-	# The following is slightly faster on CPU but can't be used because it fails with step_size concretization error
-	# for more details, just uncomment the following lines and run the code
-	# filtered_data = lax.fori_loop(
-	# 	0, 4, single_iter, data
-	# )
 	return filtered_data[0]
-
-
-# if __name__ == "__main__":
-# 	print(indices_array(4))

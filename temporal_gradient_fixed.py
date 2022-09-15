@@ -5,40 +5,34 @@ import numpy as np
 from file_utils import *
 from matrix_utils import *
 from svgf_utils import *
+from asvgf_utils import *
 import random
 from tqdm import tqdm
 
 input_path = "data_fixed"
-output_path = "output_ad"
-inter_path = "intermediate_results/temp_grad"
-
-def debug(y, x):
-	return y == 270 and x == 51
-
+output_path = "output_fixed"
 
 def interpolate_vertex(model, prim_id, uv):
-	face = model.mesh_list[0].faces[prim_id]
-	verts = np.array(model.vertices)
+	face = model['faces'][prim_id]
+	verts = np.array(model['vertices'])
 	u, v = uv[0], uv[1]
 	w = 1 - u - v
 	return verts[face[0]] * w + verts[face[1]] * u + verts[face[2]] * v
 
-
+# randomly sample a location in 3x3 stratum
 def get_intra_stratum_loc(downsample=3):
 	loc = random.randint(0, downsample ** 2 - 1)
 	return loc // downsample, loc % downsample
 
 
-# lambda in the paper
-def compute_temporal_gradient(illum_lst, depth_lst, normal_lst, vbuffer_lst, viewproj_lst, model_mats_lst,
+# forward projection along with reprojection tests for depth, luminance, normal
+def forward_projection(illum_lst, depth_lst, normal_lst, vbuffer_lst, viewproj_lst, model_mats_lst,
 							  model_fnames_lst, models_lst, prev_frame=0, curr_frame=1, downsample=3):
-
 	prev_vbuffer = vbuffer_lst[prev_frame]
 	prev_models = models_lst[prev_frame]
 	prev_illum = illum_lst[prev_frame]
 	prev_depth = depth_lst[prev_frame]
 	prev_normal = normal_lst[prev_frame]
-
 
 	curr_vbuffer = vbuffer_lst[curr_frame]
 	curr_viewproj = viewproj_lst[curr_frame]
@@ -50,23 +44,17 @@ def compute_temporal_gradient(illum_lst, depth_lst, normal_lst, vbuffer_lst, vie
 
 	h, w = prev_vbuffer.shape[0], prev_vbuffer.shape[1]
 
-	temp_grad = np.zeros( (h//downsample, w//downsample) )
-	visited = np.full(shape=(h//downsample, w//downsample), fill_value=False)
+	# just use luminance for shading sample value
+	prev_shading_samples = np.zeros(shape=(h // downsample, w // downsample))
+	curr_shading_samples = np.zeros(shape=(h // downsample, w // downsample))
 
-	lillum = np.zeros((h//downsample, w//downsample))
-	variance = np.zeros((h // downsample, w // downsample))
-
-	depth = np.zeros((h//downsample, w//downsample))
-	depth_gradient = np.ones((h//downsample, w//downsample))
-	normal = np.zeros((h//downsample, w//downsample, 3))
+	variance = np.zeros(shape=(h // downsample, w // downsample))
+	depth = np.zeros(shape=(h // downsample, w // downsample))
+	normal = np.zeros(shape=(h // downsample, w // downsample, 3))
+	lum = np.zeros(shape=(h // downsample, w // downsample))
 
 	for y in tqdm(range(0, h, downsample)):
 		for x in range(0, w, downsample):
-
-			# if not debug(y, x):
-			# 	continue
-
-			# intra stratum pixel loc for prev frame
 			prev_isy, prev_isx = get_intra_stratum_loc(downsample=downsample)
 
 			prev_x = x + prev_isx
@@ -83,18 +71,12 @@ def compute_temporal_gradient(illum_lst, depth_lst, normal_lst, vbuffer_lst, vie
 			prev_pos_lc = interpolate_vertex(prev_models[shape_id], prim_id, uv)
 			curr_mvp = curr_viewproj @ curr_model_mat
 
-			# not exactly ndc, but the values are in the range [0, 1]^2
 			curr_pos_ndc = xform_point(mat=curr_mvp, point=prev_pos_lc)
 
 			curr_y, curr_x = int(curr_pos_ndc[1] * h), int(curr_pos_ndc[0] * w)
 
-
 			# convert to stratum resolution
 			curr_sx, curr_sy = curr_x // downsample, curr_y // downsample
-
-			l_curr = luminance(curr_illum[curr_y, curr_x])
-			l_prev = luminance(prev_illum[prev_y, prev_x])
-
 
 			accept = True
 			_curr_depth = curr_depth[curr_y, curr_x]
@@ -107,71 +89,25 @@ def compute_temporal_gradient(illum_lst, depth_lst, normal_lst, vbuffer_lst, vie
 			_prev_normal = prev_normal[prev_y, prev_x]
 			accept = accept and test_reprojected_normal(_prev_normal, _curr_normal)
 
-			if accept:
+			if not accept:
+				continue
 
-				if visited[curr_sy, curr_sx]:
-					continue
-
-				visited[curr_sy, curr_sx] = True
-
-				denom = max(max(l_curr, l_prev), 1e-8)
-				# TODO: Christoph is doing some clamping between 0 and 200. Is that really needed?
-				temp_grad[curr_sy, curr_sx] = np.abs(l_curr - l_prev) / denom
+			prev_shading_samples[curr_sy, curr_sx] = luminance(prev_illum[prev_y, prev_x])
+			curr_shading_samples[curr_sy, curr_sx] = luminance(curr_illum[curr_y, curr_x])
 
 
-			# copied from Christoph's codebase
-			mesh_id = curr_vbuffer[curr_y, curr_x, 0]
-			moments = np.array([l_curr, l_curr ** 2])
-			z_curr = curr_depth[curr_y, curr_x]
-			normal_curr = curr_normal[curr_y, curr_x]
-			sum_wt = 1
-			for yy in range(downsample):
-				for xx in range(downsample):
-					p = np.array([curr_sy, curr_sx]) * downsample + np.array([yy, xx])
-					p = p.astype(int)
-
-					if not np.allclose(p, np.array([curr_y, curr_x])):
-						mesh_id_p = curr_vbuffer[p[0], p[1], 0]
-						rgb = curr_illum[p[0], p[1]]
-						l = luminance(rgb)
-
-						wt = 1.0 if mesh_id_p == mesh_id else 0.0
-
-						moments += np.array([l, l ** 2]) * wt
-						sum_wt += wt
-
-			moments /= sum_wt
-			variance[curr_sy, curr_sx] = max(0, moments[1] - moments[0] * moments[0])
-			lillum[curr_sy, curr_sx] = moments[0]
-			depth[curr_sy, curr_sx] = z_curr
-			depth_gradient[curr_sy, curr_sx] = _curr_depth_gradient
-			normal[curr_sy, curr_sx] = normal_curr
-
-	return temp_grad, lillum, variance, depth, normal, depth_gradient
-
-# reconstruct temporal gradient using max pooling in the stratum resolution
-def reconstruct_temp_gradient(temp_grad, downsample=3, grad_filter_radius=2):
-	down_h, down_w = temp_grad.shape[0], temp_grad.shape[1]
-	orig_h, orig_w = down_h * downsample, down_w * downsample
-	recon_temp_grad = np.zeros((orig_h, orig_w))
-
-	for y in tqdm(range(orig_h)):
-		for x in range(orig_w):
-			# stratum indices
-			sy, sx = y // downsample, x // downsample
+			intra_stratum_lum = luminance_vec(curr_illum[y:y+downsample, x:x+downsample])
+			lum[curr_sy, curr_sx] = np.mean(intra_stratum_lum)
+			variance[curr_sy, curr_sx] = np.mean(np.square(intra_stratum_lum)) - np.square(np.mean(intra_stratum_lum))
+			depth[curr_sy, curr_sx] = curr_depth[curr_y, curr_x]
+			normal[curr_sy, curr_sx] = curr_normal[curr_y, curr_x]
 
 
-			for yy in range(-grad_filter_radius, grad_filter_radius):
-				for xx in range(-grad_filter_radius, grad_filter_radius):
+	numer = np.abs(curr_shading_samples - prev_shading_samples)
+	denom = np.maximum(curr_shading_samples, prev_shading_samples)
 
-					# local stratum indices used within this loop nest
-					lsy, lsx = sy + yy, sx + xx
 
-					if 0 <= lsy < down_h and 0 <= lsx < down_w:
-						recon_temp_grad[y, x] = max(recon_temp_grad[y, x], temp_grad[lsy, lsx])
-
-	return recon_temp_grad
-
+	return numer, denom, lum, variance, depth, normal
 
 
 if __name__=="__main__":
@@ -199,40 +135,25 @@ if __name__=="__main__":
 		model_fnames_lst.append(model_fnames)
 		models_lst.append(load_models(model_fnames))
 
-	temp_grad, lillum, variance, \
-	depth, normal, depth_gradient = compute_temporal_gradient(illum_lst, depth_lst, normal_lst, vbuffer_lst,
-															  viewproj_lst,	model_mats_lst,	model_fnames_lst,
-															  models_lst)
-	write_exr_file(join(output_path, "temp_grad.exr"), temp_grad)
-	write_exr_file(join(inter_path, "lillum.exr"), lillum)
-	write_exr_file(join(inter_path, "variance.exr"), variance)
-	write_exr_file(join(inter_path, "depth.exr"), depth)
-	write_exr_file(join(inter_path, "depth_gradient.exr"), depth_gradient)
-	write_exr_file(join(inter_path, "normal.exr"), normal)
 
-	# if not exists(join(output_path, "temp_grad.exr")):
-	# 	temp_grad, lillum, variance, depth, normal, depth_gradient = compute_temporal_gradient()
-	# 	write_exr_file(join(output_path, "temp_grad.exr"), temp_grad)
-	# 	write_exr_file(join(inter_path, "lillum.exr"), lillum)
-	# 	write_exr_file(join(inter_path, "variance.exr"), variance)
-	# 	write_exr_file(join(inter_path, "depth.exr"), depth)
-	# 	write_exr_file(join(inter_path, "depth_gradient.exr"), depth_gradient)
-	# 	write_exr_file(join(inter_path, "normal.exr"), normal)
-	# else:
-	# 	temp_grad = read_exr_file(join(output_path, "temp_grad.exr"), single_channel=True)
-	# 	lillum = read_exr_file(join(inter_path, "lillum.exr"), single_channel=True)
-	# 	variance = read_exr_file(join(inter_path, "variance.exr"), single_channel=True)
-	# 	depth = read_exr_file(join(inter_path, "depth.exr"), single_channel=True)
-	# 	depth_gradient = read_exr_file(join(inter_path, "depth_gradient.exr"), single_channel=True)
-	# 	normal = read_exr_file(join(inter_path, "normal.exr"))
+	numer, denom, lum, variance, depth, normal = forward_projection(illum_lst, depth_lst, normal_lst, vbuffer_lst, viewproj_lst,
+														model_mats_lst, model_fnames_lst, models_lst)
 
-	radius = 1
-	filtered_temp_grad = multiple_iter_atrous_decomposition(temp_grad, variance, depth, normal, depth_gradient,
-															generate_box_filter(radius=radius), g_phi_normal=0,
-															radius=radius,
-															compute_lum=False)
+	write_exr_file(join(output_path, "numer.exr"), numer)
+	write_exr_file(join(output_path, "denom.exr"), denom)
+	write_exr_file(join(output_path, "lum.exr"), lum)
+	write_exr_file(join(output_path, "variance.exr"), variance)
+	write_exr_file(join(output_path, "depth.exr"), depth)
+	write_exr_file(join(output_path, "normal.exr"), normal)
 
-	write_exr_file(join(output_path, "filtered_temp_grad.exr"), filtered_temp_grad)
-
-	recon_filtered_temp_grad = reconstruct_temp_gradient(np.asarray(filtered_temp_grad))
-	write_exr_file(join(input_path, "recon_filtered_temp_grad.exr"), recon_filtered_temp_grad)
+	# depth_grad = compute_depth_gradient(depth)
+	#
+	#
+	# temp_grad = jnp.stack([numer, denom], axis=2)
+	#
+	# box_filter = jnp.array(generate_box_filter())
+	# filtered_temp_grad = multiple_iter_atrous_grad_decomposition(
+	# 	temp_grad, lum, variance, depth, normal, depth_grad, box_filter)
+	#
+	#
+	# write_exr_file(join(output_path, "filtered_temp_grad.exr"), filtered_temp_grad)
