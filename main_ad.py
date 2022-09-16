@@ -11,9 +11,10 @@ import jax.numpy as jnp
 
 from svgf_utils import *
 from file_utils import *
+from temporal_gradient_fixed_jax import *
 
 input_path = "data_fixed"
-output_path = "output_ad"
+output_path = "output_fixed"
 inter_path = "intermediate_results"
 
 global_alpha = 0.2
@@ -83,29 +84,11 @@ def compute_moments(frame_illum):
 		moments.append(jnp.stack([moment_1, moment_2], axis=2))
 	return moments
 
-def tile_depth_grad(depth):
-	return jnp.maximum(ddx(depth, 1, 1), ddy(depth, 1, 1))
 
 
-def compute_depth_gradient(frame_depth):
-	depth_gradients = []
-	for depth in frame_depth:
-		depth_tiled = data_prep(depth, step=1, radius=1)
-		depth_grad = vmap(tile_depth_grad)(depth_tiled)
-		depth_gradients.append(jnp.reshape(depth_grad, newshape=depth.shape))
 
-	return depth_gradients
 
-def compute_adaptive_alpha(temp_gradient, frame_illum, frame_depth, frame_normal, frame_depth_grad, frame=1):
-
-	# frame0 = frame_illum[frame-1]
-	# frame1 = frame_illum[frame]
-	# lamda = relative_gradient(frame0, frame1)
-	# write_exr_file("incorrect_temp_gradient.exr", np.asarray(lamda))
-
-	lamda = jnp.array(temp_gradient)
-
-	alpha = (1 - lamda) * global_alpha + lamda
+def compute_disocclusion(frame_depth, frame_normal, frame_depth_grad, frame=1):
 
 	prev_depth = frame_depth[frame - 1]
 	prev_normal = frame_normal[frame - 1]
@@ -116,11 +99,10 @@ def compute_adaptive_alpha(temp_gradient, frame_illum, frame_depth, frame_normal
 	depth_mask = test_reprojected_depth(prev_depth, curr_depth, curr_depth_grad)
 	normal_mask = test_reprojected_normal_vec(prev_normal, curr_normal)
 
-	alpha = jnp.where(depth_mask & normal_mask, alpha, jnp.ones(alpha.shape))
-	disocclusion = jnp.where(depth_mask & normal_mask, jnp.zeros(alpha.shape, dtype=jnp.uint8),
-							 jnp.ones(alpha.shape, dtype=jnp.uint8))
+	disocclusion = jnp.where(depth_mask & normal_mask, jnp.zeros(depth_mask.shape, dtype=jnp.uint8),
+							 jnp.ones(depth_mask.shape, dtype=jnp.uint8))
 
-	return alpha, disocclusion
+	return disocclusion
 
 
 def temporal_integration(frame_illum, frame_moments, adapt_alpha, curr_frame=1):
@@ -199,14 +181,16 @@ def spatial_variance_computation(input_illum, input_var, input_depth, input_norm
 
 
 # TODO : pass history_len 2D array to increment history length unless occlusion is encountered
-def asvgf(frame_illum, frame_depth, frame_normal, temp_gradient, filter):
+def asvgf(frame_illum, frame_depth, frame_normal,  vbuffer_lst, viewproj_lst, model_mats_lst,
+                                   models_lst, filter):
 	frame_moments = compute_moments(frame_illum)
-	frame_depth_grad = compute_depth_gradient(frame_depth)
+	frame_depth_grad = compute_frame_depth_gradient(frame_depth)
 
 	curr_frame = 1
+	disocclusion = compute_disocclusion(frame_depth, frame_normal, frame_depth_grad, frame=curr_frame)
 
-	adaptive_alpha, disocclusion = compute_adaptive_alpha(temp_gradient, frame_illum,
-														  frame_depth, frame_normal, frame_depth_grad)
+	adaptive_alpha = compute_adaptive_alpha(frame_illum, frame_depth, frame_normal, vbuffer_lst, viewproj_lst,
+											model_mats_lst, models_lst)
 
 	# we are doing temporal integration for all the pixels, later we will do spatial filtering for pixels which
 	# encounter disocclusion
@@ -262,24 +246,38 @@ if __name__ == '__main__':
 	frame_moments = []
 	frame_depth_grad = []
 
-	temp_gradient = read_exr_file(join(output_path, "recon_filtered_temp_grad.exr"), single_channel=True)
+	vbuffer_lst = []
+	viewproj_lst = []
+	model_mats_lst = []
+	model_fnames_lst = []
+	models_lst = []
+
 	# TODO: render 10 frames, first frame with light on and the rest with light off
 	for i in range(2):
 		frame_illum.append(read_exr_file(join(input_path, "frame{}.exr".format(i))))
 		frame_depth.append(read_exr_file(join(input_path, "frame{}_depth.exr".format(i)), single_channel=True))
 		frame_normal.append(read_exr_file(join(input_path, "frame{}_normal.exr".format(i))))
 
+		vbuffer_lst.append(load_vbuffer(join(input_path, "frame{}_vbuffer.npy".format(i))))
+		viewproj_lst.append(np.load(join(input_path, "frame{}_viewproj.npy".format(i))))
+
+		model_mats_lst.append(np.load(join(input_path, "frame{}_model_mats.npy".format(i))))
+		model_fnames = read_txt_file(join(input_path, "frame{}_model_fnames.txt".format(i)))
+		model_fnames_lst.append(model_fnames)
+		models_lst.append(load_models(model_fnames))
+
 	prev_frame = 0
 	curr_frame = 1
 	atrous_filter = jnp.array(generate_atrous_filter())
 
-	output_illum = asvgf(frame_illum, frame_depth, frame_normal, temp_gradient, atrous_filter)
+	output_illum = asvgf(frame_illum, frame_depth, frame_normal, vbuffer_lst, viewproj_lst, model_mats_lst,
+                                   models_lst, atrous_filter)
 	write_exr_file(join(output_path, "final_color.exr"), output_illum)
 
 	print("starting gradient computation...")
 
 	gt = read_exr_file(join(input_path, "frame1_gt.exr"))
-	aux_args = [frame_illum, frame_depth, frame_normal, temp_gradient]
+	aux_args = [frame_illum, frame_depth, frame_normal, vbuffer_lst, viewproj_lst, model_mats_lst, models_lst]
 
 	start_time = time.time()
 	grad_loss = jit(grad(loss_fn_multiple_iter))
