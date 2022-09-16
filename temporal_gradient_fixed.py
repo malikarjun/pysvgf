@@ -149,11 +149,11 @@ if __name__=="__main__":
 	# depth_grad = compute_depth_gradient(depth)
 	#
 	#
-	# temp_grad = jnp.stack([numer, denom], axis=2)
+	# data = jnp.stack([numer, denom], axis=2)
 	#
 	# box_filter = jnp.array(generate_box_filter())
 	# filtered_temp_grad = multiple_iter_atrous_grad_decomposition(
-	# 	temp_grad, lum, variance, depth, normal, depth_grad, box_filter)
+	# 	data, lum, variance, depth, normal, depth_grad, box_filter)
 	#
 	#
 	# write_exr_file(join(output_path, "filtered_temp_grad.exr"), filtered_temp_grad)

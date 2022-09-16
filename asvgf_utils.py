@@ -2,144 +2,32 @@ import numpy as np
 from jax import grad, jit, lax, vmap
 import jax.scipy as jsp
 import jax.numpy as jnp
-
-def convert_to_np(lst):
-	return [np.array(item) for item in lst]
-
-def convert_to_jnp(lst):
-	return [jnp.array(item) for item in lst]
+from svgf_utils import *
 
 
-def test_reprojected_depth(z1, z2, dz):
-	z_diff = abs(z1 - z2)
-	return z_diff < 2.0 * (dz + 1e-3)
-
-# vectorized
-def test_reprojected_normal_vec(n1, n2):
-	return jnp.sum(n1 * n2, axis=2) > 0.9
-
-def test_reprojected_normal(n1, n2):
-	return jnp.sum(n1 * n2) > 0.9
-
-def ddy_(buffer, x, y):
-	return max(abs(buffer[y, x] - buffer[y-1, x]), abs(buffer[y, x] - buffer[y+1, x]))
-
-
-def ddx_(buffer, x, y):
-	return max(abs(buffer[y, x] - buffer[y, x+1]), abs(buffer[y, x] - buffer[y, x+1]))
-
-# TODO: the convention followed for array indexing using variables x and y might be different for main_ad and
-#  temporal_gradient might be different. But depth gradient is symmetrical overall so this convection shouldn't matter
-#  as such.
-def ddy(buffer, x, y):
-	return jnp.maximum(jnp.abs(buffer[y, x] - buffer[y-1, x]), jnp.abs(buffer[y, x] - buffer[y+1, x]))
-
-
-def ddx(buffer, x, y):
-	return jnp.maximum(jnp.abs(buffer[y, x] - buffer[y, x+1]), jnp.abs(buffer[y, x] - buffer[y, x+1]))
-
-
-def generate_atrous_filter():
-	kernel_weights = np.array([1.0, 2.0 / 3.0, 1.0 / 6.0])
-
-	size = 5
-	atrous_kernel = np.zeros((size, size))
-	# sum = 0
-	for i in range(size):
-		for j in range(size):
-			ii, jj = abs(i - int(size/2)), abs(j - int(size/2))
-			atrous_kernel[i, j] = kernel_weights[ii] * kernel_weights[jj]
-			# sum += atrous_kernel[i, j]
-
-	return atrous_kernel
-
-def generate_box_filter(radius=1):
-	size = 2*radius + 1
-	return np.ones((size, size))
-
-def luminance(rgb):
-	return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
-
-
-def gaussian_filter(img):
-	x = jnp.linspace(-3, 3, 7)
-	window = jsp.stats.norm.pdf(x) * jsp.stats.norm.pdf(x[:, None])
-	return jsp.signal.convolve(img, window, mode='same')
-
-def luminance_vec(img):
-	return 0.2126 * img[:, :, 0] + 0.7152 * img[:, :, 1] + 0.0722 * img[:, :, 2]
-
-
-def luminance_vec_1d(img):
-	return 0.2126 * img[:, 0] + 0.7152 * img[:, 1] + 0.0722 * img[:, 2]
-
-
-def luminance(rgb):
-	return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
-
-
-# only works for square images
-# check out this answer for generic impl https://stackoverflow.com/a/44230705
-'''
-For n = 2, return out as the following array
-out[:, :, 0]
-|0|0|
-|1|1|
-
-out[:, :, 1]
-|0|1|
-|0|1|
-
-out is further reshaped so that it can be passed to vmap
-'''
-def indices_array(n, start=0, step=1):
-	r = np.arange(start=start, stop=start + n,  step=step)
-	out = np.empty((n//step, n//step, 2), dtype=int)
-	out[:, :, 0] = r[:, None]
-	out[:, :, 1] = r
-	return out.reshape((n//step) * (n//step), 2)
-
-
-def generate_offsets(step, radius=2):
+def generate_offsets_non_negative(radius=2):
 	rows = np.zeros((2 * radius + 1, 2 * radius + 1)).astype(int)
 	cols = np.zeros((2 * radius + 1, 2 * radius + 1)).astype(int)
 
 	for i in range(0, 2 * radius + 1):
 		for j in range(0, 2 * radius + 1):
-			rows[i, j] = i - radius
-			cols[i, j] = j - radius
+			rows[i, j] = i
+			cols[i, j] = j
 
-	rows = rows * step
-	cols = cols * step
 	return rows, cols
 
-def generate_dist(step=1, radius=2):
-	rows, cols = generate_offsets(step, radius)
-	return jnp.linalg.norm(jnp.stack([rows, cols], axis=2), axis=2)
-
-
-def data_prep(a, step=1, radius=2):
+def data_prep_non_overlapping(a, radius=1):
 	orig_h, orig_w = a.shape[0], a.shape[1]
 
-	offsets = generate_offsets(step, radius)
-
-	boundary = radius * step
-
-	if len(a.shape) == 3:
-		a = jnp.pad(a, ((boundary, boundary), (boundary, boundary), (0, 0)))
-	else:
-		a = jnp.pad(a, ((boundary, boundary), (boundary, boundary)))
+	offsets = generate_offsets_non_negative(radius)
 
 	def func_tile(idx):
 		i, j = idx[0], idx[1]
-		i += boundary
-		j += boundary
 		return a[offsets[0] + i, offsets[1] + j]
 
 	# for now h = w, but might need to change this later
-	idxs = indices_array(orig_h)
+	idxs = indices_array(n=orig_h, step=2*radius+1)
 	return vmap(func_tile)(idxs)
-
 
 # all arguments are of size (2*radius + 1, 2*radius + 1), where radius is 2
 # all arguments prefixed with `phi` are scalars..
@@ -158,7 +46,9 @@ def tile_atrous_grad_decomposition(temp_grad, lum, variance, filter,
 	weight = weight.at[radius, radius].set(0)
 
 	filtered_lum = jnp.sum(lum * weight, axis=(0, 1)) / jnp.sum(weight)
-	filtered_temp_grad = jnp.sum(temp_grad * weight, axis=(0, 1)) / jnp.sum(weight)
+
+	temp_grad_weight = jnp.stack([weight, weight], axis=2)
+	filtered_temp_grad = jnp.sum(temp_grad * temp_grad_weight, axis=(0, 1)) / jnp.sum(weight)
 
 	var_weight = jnp.square(weight)
 	filtered_variance = jnp.sum(variance * var_weight) / jnp.sum(var_weight)
@@ -180,7 +70,7 @@ def learnable_vmap_atrous_grad_decomposition(temp_grad, lum, variance, filter,
 # input_temp_grad has two values numer and denom, they are both filtered separately
 def multiple_iter_atrous_grad_decomposition(input_temp_grad, input_lum, input_var, input_depth, input_normal,
 											input_depth_grad, atrous_filter, g_phi_illum=4, g_phi_normal=128,
-											g_phi_depth=1, radius=2):
+											g_phi_depth=1, radius=1):
 	ht, wt = input_lum.shape[0], input_lum.shape[1]
 
 	def single_iter(i, data):
@@ -232,8 +122,18 @@ def multiple_iter_atrous_grad_decomposition(input_temp_grad, input_lum, input_va
 
 	data = [input_temp_grad, input_lum, input_var, input_depth, input_normal, input_depth_grad, atrous_filter]
 
-	for i in range(4):
+	for i in range(5):
 		data = single_iter(i, data)
 	filtered_data = data
 
 	return filtered_data[0]
+
+
+if __name__=="__main__":
+	a = np.zeros((6, 6, 3))
+	# for i in range(6):
+	# 	for j in range(6):
+	# 		a[i, j] = 6*i + j
+
+	val = data_prep_non_overlapping(jnp.array(a))
+	pass

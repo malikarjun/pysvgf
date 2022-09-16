@@ -43,7 +43,16 @@ def tile_depth_grad(depth):
 
 def compute_depth_gradient(depth):
 	depth_tiled = data_prep(depth, step=1, radius=1)
-	return vmap(tile_depth_grad)(depth_tiled)
+	return jnp.reshape(vmap(tile_depth_grad)(depth_tiled), newshape=depth.shape)
+
+def compute_frame_depth_gradient(frame_depth):
+	depth_gradients = []
+	for depth in frame_depth:
+		depth_grad = compute_depth_gradient(depth)
+		depth_gradients.append(jnp.reshape(depth_grad, newshape=depth.shape))
+
+	return depth_gradients
+
 
 def generate_atrous_filter():
 	kernel_weights = np.array([1.0, 2.0 / 3.0, 1.0 / 6.0])
@@ -87,7 +96,7 @@ def luminance(rgb):
 # only works for square images
 # check out this answer for generic impl https://stackoverflow.com/a/44230705
 '''
-For n = 2, return out as the following array
+For n = 2, return out as the following array but flattened
 out[:, :, 0]
 |0|0|
 |1|1|

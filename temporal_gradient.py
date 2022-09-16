@@ -129,7 +129,7 @@ def compute_temporal_gradient(illum_lst, depth_lst, normal_lst, vbuffer_lst, vie
 		s["ret_prev_normal"] = s["ret_prev_normal"].at[curr_sy, curr_sx].set(s["prev_normal"][prev_y, prev_x])
 
 		denom = jnp.maximum(jnp.maximum(l_curr, l_prev), 1e-8)
-		s["temp_grad"] = s["temp_grad"].at[curr_sy, curr_sx].set(jnp.abs(l_curr - l_prev) / denom)
+		s["data"] = s["data"].at[curr_sy, curr_sx].set(jnp.abs(l_curr - l_prev) / denom)
 
 		return s, None
 
@@ -138,7 +138,7 @@ def compute_temporal_gradient(illum_lst, depth_lst, normal_lst, vbuffer_lst, vie
 	depth_mask = test_reprojected_depth(s["ret_prev_depth"], s["ret_curr_depth"], s["ret_curr_depth_grad"])
 	normal_mask = test_reprojected_normal_vec(s["ret_prev_normal"], s["ret_curr_normal"])
 
-	s["temp_grad"] = jnp.where(depth_mask & normal_mask, s["temp_grad"], jnp.zeros(s["temp_grad"].shape))
+	s["data"] = jnp.where(depth_mask & normal_mask, s["data"], jnp.zeros(s["data"].shape))
 
 
 	def filter_step(s, i):
@@ -183,7 +183,7 @@ def compute_temporal_gradient(illum_lst, depth_lst, normal_lst, vbuffer_lst, vie
 
 	s, _ = scan(filter_step, s, np.arange(nn))
 
-	return s["temp_grad"], s["lillum"], s["variance"], s["depth"], s["normal"], s["depth_gradient"]
+	return s["data"], s["lillum"], s["variance"], s["depth"], s["normal"], s["depth_gradient"]
 
 
 def max_pool(x):
@@ -226,7 +226,7 @@ def reconstruct_temp_gradient(temp_grad, downsample=3, grad_filter_radius=2):
 			# local stratum indices used within this loop nest
 			lsy, lsx = sy + yy, sx + xx
 
-			s["recon_temp_grad"] = s["recon_temp_grad"].at[y, x].set(jnp.maximum(s["recon_temp_grad"][y, x], s["temp_grad"][lsy, lsx]))
+			s["recon_temp_grad"] = s["recon_temp_grad"].at[y, x].set(jnp.maximum(s["recon_temp_grad"][y, x], s["data"][lsy, lsx]))
 			return s, None
 
 		local_idx_array = indices_array(grad_filter_radius * 2 + 1, start=-grad_filter_radius)
