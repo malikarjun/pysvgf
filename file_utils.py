@@ -7,19 +7,18 @@ import shutil
 from glob import glob
 import jax.numpy as jnp
 
-scene_path = "/Users/mallikarjunswamy/work/acads/courses/winter-2022/CSE_272/lajolla_public/scenes/cbox"
 
 def load_vbuffer(filename):
     val = np.load(filename)
     return np.stack([val[:, :, 0].T, val[:, :, 1].T, val[:, :, 2].T, val[:, :, 3].T], axis=2)
 
-def load_models(model_fnames):
+def load_models(input_path, model_fnames):
     models = []
     for fname in model_fnames:
         if fname == "":
             models.append(None)
         else:
-            scene = pywavefront.Wavefront(join(scene_path, fname), collect_faces=True)
+            scene = pywavefront.Wavefront(join(input_path, fname), collect_faces=True)
             jax_scene = dict(vertices=scene.vertices, faces=scene.mesh_list[0].faces)
             models.append(jax_scene)
 

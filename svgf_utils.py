@@ -1,5 +1,5 @@
 import numpy as np
-from jax import grad, jit, lax, vmap
+from jax import vmap
 import jax.scipy as jsp
 import jax.numpy as jnp
 
@@ -8,6 +8,28 @@ def convert_to_np(lst):
 
 def convert_to_jnp(lst):
 	return [jnp.array(item) for item in lst]
+
+def jnp_max(a, b):
+	return jnp.maximum(jnp.array([a]), jnp.array([b]))[0]
+
+
+def jnp_min(a, b):
+	return jnp.minimum(jnp.array([a]), jnp.array([b]))[0]
+
+def saturate(val):
+	return jnp.maximum(jnp.array([0]), jnp.minimum(jnp.array([val]), jnp.array([1])))[0]
+
+
+def frac(val):
+	return np.ceil(val) - val
+
+
+def inside(p, _h, _w):
+	return np.all(np.greater_equal(p, np.array([0, 0]))) and np.all(np.less(p, np.array([_h, _w])))
+
+
+def lerp(a, b, frac):
+	return a * (1 - frac) + b * frac
 
 
 def test_reprojected_depth(z1, z2, dz):
@@ -20,13 +42,6 @@ def test_reprojected_normal_vec(n1, n2):
 
 def test_reprojected_normal(n1, n2):
 	return jnp.sum(n1 * n2) > 0.9
-
-def ddy_(buffer, x, y):
-	return max(abs(buffer[y, x] - buffer[y-1, x]), abs(buffer[y, x] - buffer[y+1, x]))
-
-
-def ddx_(buffer, x, y):
-	return max(abs(buffer[y, x] - buffer[y, x+1]), abs(buffer[y, x] - buffer[y, x+1]))
 
 # TODO: the convention followed for array indexing using variables x and y might be different for main_ad and
 #  temporal_gradient might be different. But depth gradient is symmetrical overall so this convection shouldn't matter
@@ -256,6 +271,3 @@ def multiple_iter_atrous_decomposition(input_illum, input_var, input_depth, inpu
 	# )
 	return filtered_data[0]
 
-
-# if __name__ == "__main__":
-# 	print(indices_array(4))

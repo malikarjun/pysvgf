@@ -1,396 +1,286 @@
-from os.path import join, exists
-import os
-from copy import deepcopy
-from tqdm import tqdm
-from scipy.ndimage import gaussian_filter
-from file_utils import *
+from jax import jit, grad
+from temporal_gradient import *
 
-frame_base_path = "data_fixed"
+
+input_path = "data"
+scene_path = "scenes/cbox"
 output_path = "output"
-inter_path = "intermediate_results"
 
-g_phi_illum=4
-g_phi_normal=128
-g_phi_depth=3
-global_alpha=0.2
+global_alpha = 0.2
 
-def debug(i, j):
-    return i == 210 and j == 125
 
-# def debug(i, j):
-#     return abs(i - 220) <= 1 and abs(j - 145) <= 1
+def debug(i):
+	return i // 512 == 210 and i % 512 == 125
 
-def luminance_vec(r, g, b):
-    return 0.2126 * r + 0.7152 * g + 0.0722 * b
-
-def luminance(rgb):
-    return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
 
 # lambda in paper
 def relative_gradient(frame0, frame1):
-    assert frame0.shape == frame1.shape
-    # small epsilon to avoid NaNs
-    eps = 1e-6
-    frame0 = np.maximum(frame0, np.full(fill_value=eps, shape=frame0.shape))
-    frame1 = np.maximum(frame1, np.full(fill_value=eps, shape=frame1.shape))
+	assert frame0.shape == frame1.shape
+	# small epsilon to avoid NaNs
+	eps = 1e-6
+	frame0 = jnp.maximum(frame0, np.full(fill_value=eps, shape=frame0.shape))
+	frame1 = jnp.maximum(frame1, np.full(fill_value=eps, shape=frame1.shape))
 
-    rel_grad = np.minimum(np.abs((frame1 - frame0))/np.maximum(frame0, frame1), np.ones(frame0.shape))
-    return luminance_vec(rel_grad[:, :, 0], rel_grad[:, :, 1], rel_grad[:, :, 2])
-
-def test_reprojected_depth(z1, z2, dz):
-    z_diff = abs(z1 - z2)
-    return z_diff < 2.0 * (dz + 1e-3)
-
-def test_reprojected_normal(n1, n2):
-    return n1.dot(n2) > 0.9
-
-def compute_adaptive_alpha(frame_depth, frame_normal, frame_depth_grad, frame=1):
-    print("compute adaptive alpha")
-
-    hh, ww = frame_depth[0].shape
-
-    disocclusion = np.zeros((hh, ww))
-
-    frame0 = read_exr_file(join(frame_base_path, "frame0.exr"))
-    frame1 = read_exr_file(join(frame_base_path, "frame1.exr"))
-
-    lamda = relative_gradient(frame0, frame1)
-    alpha = (1 - lamda) * global_alpha + lamda
-
-    prev_depth = frame_depth[frame-1]
-    prev_normal = frame_normal[frame-1]
-    curr_depth = frame_depth[frame]
-    curr_normal = frame_normal[frame]
-    curr_depth_grad = frame_depth_grad[frame]
-
-    for i in tqdm(range(hh)):
-        for j in range(ww):
-            if not test_reprojected_depth(prev_depth[i, j], curr_depth[i, j], curr_depth_grad[i, j]) or \
-                    not test_reprojected_normal(prev_normal[i, j], curr_normal[i, j]):
-                alpha[i, j] = 1.0
-                disocclusion[i, j] = 1
-
-    return alpha, disocclusion
-
-
-def compute_moments(color):
-    moments = np.zeros((color.shape[0], color.shape[1], 2))
-    moments[:, :, 0] = 0.2126 * color[:, :, 0] + 0.7152 * color[:, :, 1] + 0.0722 * color[:, :, 2]
-    moments[:, :, 1] = np.square(moments[:, :, 0])
-    return moments
-
-# TODO: this is wrong. @trevor mentioned the right way to compute this using ray differentials
-def compute_depth_gradient(depth):
-    depth = deepcopy(depth)
-    h, w = depth.shape
-    depth = np.pad(depth, (1,1), mode='edge')
-
-    indices = [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]]
-
-    depth_grad = np.ones((h, w))
-    # for i in tqdm(range(1, h + 1)):
-    #     for j in range(1, w + 1):
-    #         depth_center = depth[i, j]
-    #         for idx in indices:
-    #             depth_grad[i-1, j-1] += abs(depth_center - depth[i + idx[0], j + idx[1]])
-    #         depth_grad[i-1, j-1] /= 8
-
-    return depth_grad
-
-
-def saturate(val):
-    return max(0, min(val, 1))
-
-def frac(val):
-    return np.ceil(val) - val
-
-def inside(p, _h, _w):
-    return np.all(np.greater_equal(p, np.array([0, 0]))) and np.all(np.less(p, np.array([_h, _w])))
-
-def lerp(a, b, frac):
-    return a * (1 - frac) + b * frac
-
-# TODO: we are not demodulating the albedo for A-SVGF, illum and color refer to the same thing
-# TODO: no reprojection is happening now, fix this for dynamic camera and scenes
-def temporal_integration(g_prev_illum, g_prev_moments, g_illum, g_moments, g_adapt_alpha):
-    g_adapt_alpha = deepcopy(g_adapt_alpha)
-    hh, ww, cc = g_illum.shape
-    integrated_illum = deepcopy(g_illum)
-    integrated_moments = deepcopy(g_moments)
-    integrated_variance = np.zeros((hh, ww))
-
-    offset = np.array([[0, 0], [1, 0], [0, 1], [1, 1]])
-
-    hh, ww, cc = g_prev_illum.shape
-    print("running temporal integration...")
-    for i in tqdm(range(hh)):
-        for j in range(ww):
-
-            # TODO : bilinear interpolation was causing issues at the boundary of spherical light
-
-            # prev_illum = np.array([0, 0, 0]).astype(float)
-            # prev_moments = np.array([0, 0]).astype(float)
-            # # example (0, 0) -> (0.5, 0.5)
-            # pos_prev = np.array([i, j]) + 0.5
-            #
-            # sumw = 0.0
-            # y = frac(pos_prev[0])
-            # x = frac(pos_prev[1])
-            #
-            # # bilinear weights
-            # w = np.array([(1 - x) * (1 - y), x * (1 - y), (1 - x) * y, x * y])
-            #
-            # # perform bilinear interpolation
-            # for sample_idx in range(4):
-            #     loc = pos_prev.astype(int) + offset[sample_idx]
-            #     if inside(loc, hh, ww):
-            #         prev_illum += w[sample_idx] * g_prev_illum[loc[0], loc[1]]
-            #         prev_moments += w[sample_idx] * g_prev_moments[loc[0], loc[1]]
-            #         sumw += w[sample_idx]
-            #
-            # prev_illum /= sumw
-            # prev_moments /= sumw
-
-            prev_illum = g_prev_illum[i , j]
-            prev_moments = g_prev_moments[i, j]
-
-            integrated_illum[i, j] = lerp(prev_illum, g_illum[i, j], g_adapt_alpha[i, j])
-            integrated_moments[i, j] = lerp(prev_moments, g_moments[i, j], g_adapt_alpha[i, j])
-            integrated_variance[i, j] = integrated_moments[i, j, 1] - np.square(integrated_moments[i, j, 0])
-
-    return integrated_illum, integrated_moments, integrated_variance
-
+	rel_grad = jnp.minimum(jnp.abs((frame1 - frame0)) / jnp.maximum(frame0, frame1), jnp.ones(frame0.shape))
+	return luminance_vec(rel_grad)
 
 
 def compute_weight(depth_center, depth_p, phi_depth, normal_center, normal_p, phi_normal, luminance_illum_center,
-                   luminance_illum_p, phi_illum):
-    weight_normal = pow(saturate(normal_center.dot(normal_p)), phi_normal)
-    weight_z = 0.0 if phi_depth == 0 else abs(depth_center - depth_p) / phi_depth
-    weight_l_illum = abs(luminance_illum_center - luminance_illum_p) / phi_illum
-    weight_illum = np.exp(0.0 - max(weight_l_illum, 0.0) - max(weight_z, 0.0)) * weight_normal
+				   luminance_illum_p, phi_illum):
+	weight_normal = jnp.power(saturate(normal_center.dot(normal_p)), phi_normal)
+	weight_z = jnp.where(jnp.array([phi_depth]) == 0, jnp.array([0]),
+						 jnp.array([jnp.abs(depth_center - depth_p) / phi_depth]))[0]
+	# weight_z = 0.0 if phi_depth == 0 else abs(depth_center - depth_p) / phi_depth
+	weight_l_illum = jnp.abs(luminance_illum_center - luminance_illum_p) / phi_illum
+	weight_illum = jnp.exp(0.0 - jnp_max(weight_l_illum, 0.0) - jnp_max(weight_z, 0.0)) * weight_normal
 
-    return weight_illum
-    # return weight_illum
-
-
-
-def compute_variance_spatially(frame_illum, frame_depth, frame_normal, frame_moments, frame_depth_grad, disocclusion,
-                               in_variance, frame=1):
-    print("computing variance spatially...")
-    hh, ww, _ = frame_illum[frame].shape
-    g_illumination = frame_illum[frame]
-    g_moments = frame_moments[frame]
-    g_depth = frame_depth[frame]
-    g_normal = frame_normal[frame]
-    g_depth_grad = frame_depth_grad[frame]
-
-    variance = deepcopy(in_variance)
-
-    radius = 3
-
-    for i in tqdm(range(hh)):
-        for j in range(ww):
-
-            if not disocclusion[i, j]:
-                continue
-
-            ipos = np.array([i, j])
-            sum_w_illumination = 0.0
-            sum_moments = np.array([0, 0]).astype(float)
-
-            illumination_center = g_illumination[i, j]
-            l_illumination_center = luminance(illumination_center)
-            z_center = g_depth[i, j]
-            n_center = g_normal[i, j]
-
-            # TODO: revisit this
-            phi_depth = max(1e-8, g_depth_grad[i, j]) * g_phi_depth
-
-            for yy in range(-radius, radius):
-                for xx in range(-radius, radius):
-                    p = np.array([yy, xx]) + ipos
-                    inside = np.all(np.greater_equal(p, np.array([0, 0]))) and np.all(np.less(p, np.array([hh, ww])))
-
-                    if inside:
-                        y, x = p[0], p[1]
-                        illumination_p = g_illumination[y, x]
-                        moments_p = g_moments[y, x]
-                        l_illumination_p = luminance(illumination_p)
-                        z_p = g_depth[y, x]
-                        n_p = g_normal[y, x]
-
-                        # TODO: how do we compute depth gradients
-                        w = compute_weight(z_center, z_p, phi_depth * np.linalg.norm(np.array([yy, xx])),
-                                           n_center, n_p, g_phi_normal,
-                                           l_illumination_center, l_illumination_p, g_phi_illum)
-
-                        sum_w_illumination += w
-                        sum_moments += w * moments_p
-
-            sum_w_illumination = max(sum_w_illumination, 1e-6)
-            sum_moments /= sum_w_illumination
-
-            variance[i, j] = sum_moments[1] - sum_moments[0] * sum_moments[0]
-    # return np.repeat(variance[:, :, np.newaxis], 3, axis=2)
-    return variance
+	return weight_illum
 
 
+def compute_moments(frame_illum):
+	moments = []
+	for illum in frame_illum:
+		moment_1 = 0.2126 * illum[:, :, 0] + 0.7152 * illum[:, :, 1] + 0.0722 * illum[:, :, 2]
+		moment_2 = jnp.square(moment_1)
+		moments.append(jnp.stack([moment_1, moment_2], axis=2))
+	return moments
 
-def compute_atrous_decomposition(illum, in_variance, depth, normal, depth_grad, g_step_size):
-    print("computing atrous decomposition...")
-    hh, ww, cc = illum.shape
-    g_illumination = illum
-    g_variance = deepcopy(in_variance)
-    g_variance = gaussian_filter(g_variance, sigma=3, truncate=3)
+def compute_disocclusion(frame_depth, frame_normal, frame_depth_grad, frame=1):
+
+	prev_depth = frame_depth[frame - 1]
+	prev_normal = frame_normal[frame - 1]
+	curr_depth = frame_depth[frame]
+	curr_normal = frame_normal[frame]
+	curr_depth_grad = frame_depth_grad[frame]
+
+	depth_mask = test_reprojected_depth(prev_depth, curr_depth, curr_depth_grad)
+	normal_mask = test_reprojected_normal_vec(prev_normal, curr_normal)
+
+	disocclusion = jnp.where(depth_mask & normal_mask, jnp.zeros(depth_mask.shape, dtype=jnp.uint8),
+							 jnp.ones(depth_mask.shape, dtype=jnp.uint8))
+
+	return disocclusion
 
 
-    g_depth = depth
-    g_normal = normal
-    g_depth_grad = depth_grad
-    kernel_weights = np.array([1.0, 2.0 / 3.0, 1.0 / 6.0])
-    # TODO: the paper has different weights
-    # kernel_weights = np.array([3.0 / 8.0, 1.0 / 4.0, 1.0 / 16.0])
+def temporal_integration(frame_illum, frame_moments, adapt_alpha, curr_frame=1):
+
+	prev_illum, curr_illum = frame_illum[curr_frame-1], frame_illum[curr_frame]
+	prev_moments, curr_moments = frame_moments[curr_frame-1], frame_moments[curr_frame]
+
+	adapt_alpha = jnp.expand_dims(adapt_alpha, axis=2)
+	integrated_illum = lerp(prev_illum, curr_illum, adapt_alpha)
+	integrated_moments = lerp(prev_moments, curr_moments, adapt_alpha)
+	integrated_variance = integrated_moments[:, :, 1] - jnp.square(integrated_moments[:, :, 0])
+
+	return integrated_illum, integrated_moments, integrated_variance
 
 
-    filtered_color = np.zeros((hh, ww, cc))
-    filtered_variance = np.zeros((hh, ww))
+# all arguments are of size (2*radius + 1, 2*radius + 1), where radius is 2
+# moments is of size (2*radius + 1, 2*radius + 1, 2)
+# all arguments prefixed with `phi` are scalars..
+# this function will be vmapped over the entire 2D image space for high performance on GPU
+def tile_spatial_variance_computation(moments,
+									  depth_center, depth_p, phi_depth,
+									  normal_center, normal_p, phi_normal,
+									  l_illum_center, l_illum_p, phi_l_illum):
+	weight_normal = jnp.power(jnp.sum(normal_center * normal_p, axis=2), phi_normal)
+	weight_depth = jnp.where(phi_depth == 0, 0, jnp.abs(depth_center - depth_p) / phi_depth)
+	weight_l_illum = jnp.abs(l_illum_center - l_illum_p) / phi_l_illum
+	weight = jnp.exp(0.0 - jnp.maximum(weight_l_illum, 0.0) - jnp.maximum(weight_depth, 0.0)) * weight_normal
+	weight = jnp.maximum(1e-6, weight)
+	# weight = weight.at[radius, radius].set(0)
 
-    radius = 2
+	var_weight = jnp.square(weight)
+	filtered_moments = jnp.sum(moments * jnp.expand_dims(var_weight, axis=2), axis=(0, 1)) / jnp.sum(var_weight)
+	filtered_variance = filtered_moments[1] - jnp.square(filtered_moments[0])
 
-    for i in tqdm(range(hh)):
-        for j in range(ww):
+	return filtered_variance
 
-            # if not debug(i, j):
-            #     continue
 
-            ipos = np.array([i, j])
-            # sum_w_illumination = kernel_weights[0]
-            sum_w_illumination = 0.0
-            # FIXME: best so far
-            sum_illumination = np.array([0, 0, 0]).astype(float)
-            # sum_illumination = g_illumination[i, j] * sum_w_illumination
-            sum_variance = 0.0
+def spatial_variance_computation(input_illum, input_var, input_depth, input_normal, input_depth_grad, input_moments,
+								 disocclusion,  g_phi_illum=4, g_phi_normal=128, g_phi_depth=1, radius=2):
+	ht, wt, c = input_illum.shape
+	input_l_illum = luminance_vec(input_illum)
 
-            illumination_center = g_illumination[i, j]
-            l_illumination_center = luminance(illumination_center)
-            z_center = g_depth[i, j]
-            n_center = g_normal[i, j]
-            # this has been gaussian blurred
-            var_center = g_variance[i, j]
+	input_moments = data_prep(input_moments)
+	l_illum_p = data_prep(input_l_illum)
+	depth_p = data_prep(input_depth)
+	normal_p = data_prep(input_normal)
 
-            # TODO: revisit g_depth_grad
-            phi_depth = max(1e-8, g_depth_grad[i, j]) * g_phi_depth
+	l_illum_center = jnp.reshape(input_l_illum, newshape=(ht * wt))
+	depth_center = jnp.reshape(input_depth, newshape=(ht * wt))
+	normal_center = jnp.reshape(input_normal, newshape=(ht * wt, c))
 
-            # FIXME : best so far
-            phi_l_illumination = g_phi_illum * np.sqrt(max(0.0, 1e-8 + var_center))
-            # phi_l_illumination = g_phi_illum
-            # phi_l_illumination = g_phi_illum * np.sqrt(max(0.0, 1.0 + g_variance[i, j]))
+	phi_l_illum = g_phi_illum * jnp.sqrt(jnp.maximum(0.0, 1e-8 + input_var)).flatten()
+	tmp2 = jnp.expand_dims(g_phi_depth * jnp.maximum(1e-8, input_depth_grad), axis=(2, 3))
+	dist_vals = generate_dist()
+	tmp11 = jnp.repeat(
+		jnp.expand_dims(dist_vals, axis=0),
+		wt,
+		axis=0
+	)
+	tmp1 = jnp.repeat(
+		jnp.expand_dims(tmp11, axis=0),
+		ht,
+		axis=0
+	)
+	phi_depth = jnp.reshape(tmp1 * tmp2, newshape=(ht * wt, 2 * radius + 1, 2 * radius + 1))
+	phi_normal = g_phi_normal * jnp.ones(ht * wt)
 
-            for yy in range(-radius, radius+1):
-                for xx in range(-radius, radius+1):
-                    p = np.array([yy, xx]) * g_step_size + ipos
-                    inside = np.all(np.greater_equal(p, np.array([0, 0]))) and np.all(np.less(p, np.array([hh, ww])))
-                    kernel = kernel_weights[abs(xx)] * kernel_weights[abs(yy)]
+	filtered_variance = vmap(tile_spatial_variance_computation)(input_moments,
+																depth_center, depth_p, phi_depth,
+																normal_center, normal_p, phi_normal,
+																l_illum_center, l_illum_p, phi_l_illum)
 
-                    if inside and (xx != 0 or yy != 0):
-                        y, x = p[0], p[1]
-                        illumination_p = g_illumination[y, x]
-                        variance_p = g_variance[y, x]
-                        l_illumination_p = luminance(illumination_p)
-                        z_p = g_depth[y, x]
-                        n_p = g_normal[y, x]
+	return jnp.where(jnp.reshape(disocclusion, newshape=(ht * wt)),
+					 filtered_variance,
+					 jnp.reshape(input_var, newshape=(ht * wt)))
 
-                        # TODO: how do we compute depth gradients
-                        w = compute_weight(z_center, z_p, phi_depth * np.linalg.norm(np.array([yy, xx])),
-                                           n_center, n_p, g_phi_normal,
-                                           l_illumination_center, l_illumination_p, phi_l_illumination)
 
-                        w_illumination = w * kernel
-                        sum_w_illumination += w_illumination
-                        sum_illumination += w_illumination * illumination_p
-                        sum_variance += np.square(w_illumination) * variance_p
+# TODO : pass history_len 2D array to increment history length unless occlusion is encountered
+def asvgf(frame_illum, frame_depth, frame_normal,  vbuffer_lst, viewproj_lst, model_mats_lst,
+                                   jax_models_lst, random_is_idxs, filter):
+	frame_moments = compute_moments(frame_illum)
+	frame_depth_grad = compute_frame_depth_gradient(frame_depth)
 
-            sum_w_illumination = max(sum_w_illumination, 1e-6)
+	curr_frame = 1
+	disocclusion = compute_disocclusion(frame_depth, frame_normal, frame_depth_grad, frame=curr_frame)
 
-            sum_illumination /= sum_w_illumination
-            sum_variance /= np.square(sum_w_illumination)
+	adaptive_alpha = compute_adaptive_alpha(frame_illum, frame_depth, frame_normal, vbuffer_lst, viewproj_lst,
+											model_mats_lst, jax_models_lst, random_is_idxs)
 
-            filtered_color[i, j, :] = sum_illumination
-            # filtered_color[i, j, :] = sum_w_illumination
-            # print(sum_w_illumination)
-            # print(sum_illumination)
-            # exit(0)
+	# we are doing temporal integration for all the pixels, later we will do spatial filtering for pixels which
+	# encounter disocclusion
+	# TODO: moment and frame_illum global accumulators need to be passed to integrate over more than 2 frames
+	# TODO: try tap filtering, if no tap is found then set C'_i = C_i (disocclusion case). Note this is different than
+	#  what we are doing for the moments/variance, we spatially filter to find a variance instead of just setting it
+	#  to the previous value
+	integrated_illum, integrated_moments, integrated_variance = temporal_integration(frame_illum, frame_moments,
+																					 adaptive_alpha)
 
-            filtered_variance[i, j] = sum_variance
-    return filtered_color, filtered_variance
+	input_list = [
+		frame_illum[curr_frame], integrated_variance, frame_depth[curr_frame], frame_normal[curr_frame],
+		frame_depth_grad[curr_frame], frame_moments[curr_frame]
+	]
+	input_illum, input_var, input_depth, input_normal, input_depth_grad, input_moments = convert_to_jnp(input_list)
+
+	# this function only updates the pixels where there is a disocclusion and retains the values computed using
+	# temporal_integration function for the rest
+	input_var = spatial_variance_computation(input_illum, input_var, input_depth, input_normal, input_depth_grad,
+													 input_moments, disocclusion)
+
+	ht, wt, c = input_illum.shape
+	input_var = jnp.reshape(input_var, newshape=(ht, wt))
+
+	output_illum = multiple_iter_atrous_decomposition(integrated_illum, input_var, input_depth, input_normal,
+													  input_depth_grad, filter)
+
+	# TODO : return accumulated color and moments as well, they will again be passed as input to the next invocation of
+	#  this function. They work as global accumulator variables.
+	return output_illum
+
+
+def loss_fn_asvgf(filter, gt, aux_args):
+	pred_img = asvgf(*aux_args, filter)
+	return jnp.mean(jnp.square(pred_img - gt))
+
 
 if __name__ == '__main__':
-    os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
+	os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
+	os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
+	USE_TEMPORAL_ACCU = True
 
-    USE_TEMPORAL_ACCU = True
+	os.makedirs(output_path, exist_ok=True)
 
-    os.makedirs(output_path, exist_ok=True)
+	frame_illum = []
+	frame_depth = []
+	frame_normal = []
+	frame_moments = []
+	frame_depth_grad = []
 
-    frame_illum = []
-    frame_depth = []
-    frame_normal = []
-    frame_moments = []
-    frame_depth_grad = []
+	vbuffer_lst = []
+	viewproj_lst = []
+	model_mats_lst = []
+	model_fnames_lst = []
+	models_lst = []
 
-    for i in range(2):
-        frame_illum.append(read_exr_file(join(frame_base_path, "frame{}.exr".format(i))))
-        frame_depth.append(read_exr_file(join(frame_base_path, "frame{}_depth.exr".format(i)))[:, :, 0])
-        frame_normal.append(read_exr_file(join(frame_base_path, "frame{}_normal.exr".format(i))))
-        frame_moments.append(compute_moments(frame_illum[i]))
-        frame_depth_grad.append(compute_depth_gradient(frame_depth[i]))
+	# TODO: render 10 frames, first frame with light on and the rest with light off
+	for i in range(2):
+		frame_illum.append(read_exr_file(join(input_path, "frame{}.exr".format(i))))
+		frame_depth.append(read_exr_file(join(input_path, "frame{}_depth.exr".format(i)), single_channel=True))
+		frame_normal.append(read_exr_file(join(input_path, "frame{}_normal.exr".format(i))))
 
-    prev_frame = 0
-    curr_frame = 1
+		vbuffer_lst.append(load_vbuffer(join(input_path, "frame{}_vbuffer.npy".format(i))))
+		viewproj_lst.append(np.load(join(input_path, "frame{}_viewproj.npy".format(i))))
 
-    adaptive_alpha_path = join(inter_path, "adaptive_alpha.npy")
-    disocclusion_path = join(inter_path, "disocclusion.npy")
-    adaptive_alpha = get_file(adaptive_alpha_path)
-    disocclusion = get_file(disocclusion_path)
-    if adaptive_alpha is None or disocclusion is None:
-        adaptive_alpha, disocclusion = compute_adaptive_alpha(frame_depth, frame_normal, frame_depth_grad)
-        np.save(adaptive_alpha_path, adaptive_alpha)
-        np.save(disocclusion_path, disocclusion)
+		model_mats_lst.append(np.load(join(input_path, "frame{}_model_mats.npy".format(i))))
+		model_fnames = read_txt_file(join(input_path, "frame{}_model_fnames.txt".format(i)))
+		model_fnames_lst.append(model_fnames)
+		models_lst.append(load_models(scene_path, model_fnames))
 
-    integrated_illum_path = join(inter_path, "integrated_illum.npy")
-    integrated_moments_path = join(inter_path, "integrated_moments.npy")
-    integrated_variance_path = join(inter_path, "variance.npy")
+	downsample = 3
 
-    integrated_illum = get_file(integrated_illum_path)
-    integrated_moments = get_file(integrated_moments_path)
-    integrated_variance = get_file(integrated_variance_path)
+	# random intra stratum indices : these are generated beforehand and provided as input because it is non-trivial to
+	# handle this in jax.More info can be found here https://jax.readthedocs.io/en/latest/jax-101/05-random-numbers.html
+	random_is_idxs = jnp.array(random.choices(population=np.arange(downsample ** 2),
+											  k=(frame_depth[0].shape[0] // downsample) * (
+														  frame_depth[0].shape[1] // downsample)))
 
-    if integrated_illum is None or integrated_moments is None or integrated_variance is None:
-        integrated_illum, integrated_moments, integrated_variance = temporal_integration(
-            g_prev_illum=frame_illum[prev_frame], g_prev_moments=frame_moments[prev_frame],
-            g_illum=frame_illum[curr_frame], g_moments=frame_moments[curr_frame], g_adapt_alpha=adaptive_alpha)
+	jax_models_lst = []
+	for f in range(2):
+		models = models_lst[f]
 
-        integrated_variance = compute_variance_spatially(frame_illum, frame_depth, frame_normal, frame_moments,
-                                              frame_depth_grad, disocclusion, integrated_variance)
+		jax_models = []
+		max_k = -1
+		for i in range(len(models)):
+			model = models[i]
+			jax_model = []
 
-        np.save(integrated_illum_path, integrated_illum)
-        np.save(integrated_moments_path, integrated_moments)
-        np.save(integrated_variance_path, integrated_variance)
+			# iterate over two keys, vertices and faces
+			for j in range(len(model.keys())):
+				key = list(model.keys())[j]
+				vert_faces = model[key]
+				max_k = max(max_k, len(vert_faces))
 
-    frame_illum[curr_frame] = integrated_illum
-    frame_moments[curr_frame] = integrated_moments
+				jax_vert_faces = []
 
+				for k in range(len(vert_faces)):
+					item = list(vert_faces[k])
 
-    input_illum = deepcopy(frame_illum[curr_frame])
-    input_var = deepcopy(integrated_variance)
+					jax_item = []
+					for l in range(len(item)):
+						jax_item.append(item[l])
 
-    for i in range(5):
-        step_size = 1 << i
-        output_illum, output_var = compute_atrous_decomposition(input_illum, input_var, frame_depth[curr_frame],
-                                                                frame_normal[curr_frame], frame_depth_grad[curr_frame],
-                                                                g_step_size=step_size)
-        # write_exr_file(join(output_path, "iter{}_color.exr".format(i+1)), output_illum)
-        # write_exr_file(join(output_path, "iter{}_variance.exr").format(i+1), output_var)
-        input_illum = deepcopy(output_illum)
-        input_var = deepcopy(output_var)
+					jax_vert_faces.append(jax_item)
 
-    write_exr_file(join(output_path, "final_color.exr"), output_illum)
+				jax_model.append(jax_vert_faces)
+
+			jax_models.append(jax_model)
+
+		for i in range(len(jax_models)):
+			for j in range(len(jax_models[i])):
+				for k in range(max_k - len(jax_models[i][j])):
+					jax_models[i][j].append([0.0] * len(jax_models[i][j][0]))
+
+		jax_models_lst.append(jnp.array(jax_models))
+
+	prev_frame = 0
+	curr_frame = 1
+	atrous_filter = jnp.array(generate_atrous_filter())
+
+	output_illum = asvgf(frame_illum, frame_depth, frame_normal, vbuffer_lst, viewproj_lst, model_mats_lst,
+                                   jax_models_lst, random_is_idxs, atrous_filter)
+	write_exr_file(join(output_path, "final_color.exr"), output_illum)
+
+	print("starting gradient computation...")
+
+	gt = read_exr_file(join(input_path, "frame1_gt.exr"))
+	aux_args = [frame_illum, frame_depth, frame_normal, vbuffer_lst, viewproj_lst, model_mats_lst, jax_models_lst,
+				random_is_idxs]
+
+	start_time = time.time()
+	grad_loss = jit(grad(loss_fn_asvgf))
+	gradient_filter = grad_loss(atrous_filter, gt, aux_args)
+	print("time for gradient computation {} s".format(time.time() - start_time))
+	print(gradient_filter.shape)
+	print(gradient_filter)
