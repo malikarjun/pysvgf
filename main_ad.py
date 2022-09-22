@@ -182,7 +182,8 @@ def spatial_variance_computation(input_illum, input_var, input_depth, input_norm
 
 # TODO : pass history_len 2D array to increment history length unless occlusion is encountered
 def asvgf(frame_illum, frame_depth, frame_normal,  vbuffer_lst, viewproj_lst, model_mats_lst,
-                                   models_lst, filter):
+                                   jax_models_lst, random_is_idxs, filter):
+# def asvgf(frame_illum, frame_depth, frame_normal, adaptive_alpha, filter):
 	frame_moments = compute_moments(frame_illum)
 	frame_depth_grad = compute_frame_depth_gradient(frame_depth)
 
@@ -190,7 +191,7 @@ def asvgf(frame_illum, frame_depth, frame_normal,  vbuffer_lst, viewproj_lst, mo
 	disocclusion = compute_disocclusion(frame_depth, frame_normal, frame_depth_grad, frame=curr_frame)
 
 	adaptive_alpha = compute_adaptive_alpha(frame_illum, frame_depth, frame_normal, vbuffer_lst, viewproj_lst,
-											model_mats_lst, models_lst)
+											model_mats_lst, jax_models_lst, random_is_idxs)
 
 	# we are doing temporal integration for all the pixels, later we will do spatial filtering for pixels which
 	# encounter disocclusion
@@ -223,12 +224,7 @@ def asvgf(frame_illum, frame_depth, frame_normal,  vbuffer_lst, viewproj_lst, mo
 	return output_illum
 
 
-
-def _loss_fn_multiple_iter(filter, gt, aux_args):
-	pred_img = multiple_iter_atrous_decomposition(*aux_args, filter)
-	return jnp.mean(jnp.square(pred_img - gt))
-
-def loss_fn_multiple_iter(filter, gt, aux_args):
+def loss_fn_asvgf(filter, gt, aux_args):
 	pred_img = asvgf(*aux_args, filter)
 	return jnp.mean(jnp.square(pred_img - gt))
 
@@ -266,21 +262,72 @@ if __name__ == '__main__':
 		model_fnames_lst.append(model_fnames)
 		models_lst.append(load_models(model_fnames))
 
+	downsample = 3
+
+	# random intra stratum indices : these are generated beforehand and provided as input because it is non-trivial to
+	# handle this in jax.More info can be found here https://jax.readthedocs.io/en/latest/jax-101/05-random-numbers.html
+	random_is_idxs = jnp.array(random.choices(population=np.arange(downsample ** 2),
+											  k=(frame_depth[0].shape[0] // downsample) * (
+														  frame_depth[0].shape[1] // downsample)))
+
+	jax_models_lst = []
+	for f in range(2):
+		models = models_lst[f]
+
+		jax_models = []
+		max_k = -1
+		for i in range(len(models)):
+			model = models[i]
+			jax_model = []
+
+			# iterate over two keys, vertices and faces
+			for j in range(len(model.keys())):
+				key = list(model.keys())[j]
+				vert_faces = model[key]
+				max_k = max(max_k, len(vert_faces))
+
+				jax_vert_faces = []
+
+				for k in range(len(vert_faces)):
+					item = list(vert_faces[k])
+
+					jax_item = []
+					for l in range(len(item)):
+						jax_item.append(item[l])
+
+					jax_vert_faces.append(jax_item)
+
+				jax_model.append(jax_vert_faces)
+
+			jax_models.append(jax_model)
+
+		for i in range(len(jax_models)):
+			for j in range(len(jax_models[i])):
+				for k in range(max_k - len(jax_models[i][j])):
+					jax_models[i][j].append([0.0] * len(jax_models[i][j][0]))
+
+		jax_models_lst.append(jnp.array(jax_models))
+
 	prev_frame = 0
 	curr_frame = 1
 	atrous_filter = jnp.array(generate_atrous_filter())
 
+	# adaptive_alpha = read_exr_file(join(output_path, "aa.exr"), single_channel=True, jax_array=True)
+	# output_illum = asvgf(frame_illum, frame_depth, frame_normal, adaptive_alpha, atrous_filter)
+
 	output_illum = asvgf(frame_illum, frame_depth, frame_normal, vbuffer_lst, viewproj_lst, model_mats_lst,
-                                   models_lst, atrous_filter)
+                                   jax_models_lst, random_is_idxs, atrous_filter)
 	write_exr_file(join(output_path, "final_color.exr"), output_illum)
 
 	print("starting gradient computation...")
 
 	gt = read_exr_file(join(input_path, "frame1_gt.exr"))
-	aux_args = [frame_illum, frame_depth, frame_normal, vbuffer_lst, viewproj_lst, model_mats_lst, models_lst]
+	aux_args = [frame_illum, frame_depth, frame_normal, vbuffer_lst, viewproj_lst, model_mats_lst, jax_models_lst,
+				random_is_idxs]
+	# aux_args = [frame_illum, frame_depth, frame_normal, adaptive_alpha]
 
 	start_time = time.time()
-	grad_loss = jit(grad(loss_fn_multiple_iter))
+	grad_loss = jit(grad(loss_fn_asvgf))
 	gradient_filter = grad_loss(atrous_filter, gt, aux_args)
 	print("time for gradient computation {} s".format(time.time() - start_time))
 	print(gradient_filter.shape)

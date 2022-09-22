@@ -270,8 +270,8 @@ def reconstruct_max_pool(data, downsample=3, filter_radius=2):
 
     return s["recon_data"]
 
-def compute_adaptive_alpha(illum_lst, depth_lst, normal_lst, vbuffer_lst, viewproj_lst, model_mats_lst, models_lst,
-                              downsample=3):
+def compute_adaptive_alpha(illum_lst, depth_lst, normal_lst, vbuffer_lst, viewproj_lst, model_mats_lst, jax_models_lst,
+                           random_is_idxs, downsample=3):
 
     hh, ww = depth_lst[0].shape
     curr_illum = jnp.array(illum_lst[1])
@@ -279,51 +279,6 @@ def compute_adaptive_alpha(illum_lst, depth_lst, normal_lst, vbuffer_lst, viewpr
     lum, variance = init_stratum_data(illum_data)
     lum = jnp.reshape(lum, newshape=(hh // downsample, ww // downsample))
     variance = jnp.reshape(variance, newshape=(hh // downsample, ww // downsample))
-
-    # random intra stratum indices : these are generated beforehand and provided as input because it is non-trivial to
-    # handle this in jax.More info can be found here https://jax.readthedocs.io/en/latest/jax-101/05-random-numbers.html
-    random_is_idxs = jnp.array(random.choices(population=np.arange(downsample ** 2),
-                                    k= (depth_lst[0].shape[0]//downsample) * (depth_lst[0].shape[1] // downsample) ))
-
-    jax_models_lst = []
-    for f in range(2):
-        models = models_lst[f]
-
-        jax_models = []
-        max_k = -1
-        for i in range(len(models)):
-            model = models[i]
-            jax_model = []
-
-            # iterate over two keys, vertices and faces
-            for j in range(len(model.keys())):
-                key = list(model.keys())[j]
-                vert_faces = model[key]
-                max_k = max(max_k, len(vert_faces))
-
-                jax_vert_faces = []
-
-                for k in range(len(vert_faces)):
-                    item = list(vert_faces[k])
-
-                    jax_item = []
-                    for l in range(len(item)):
-                        jax_item.append(item[l])
-
-                    jax_vert_faces.append(jax_item)
-
-                jax_model.append(jax_vert_faces)
-
-            jax_models.append(jax_model)
-
-
-
-        for i in range(len(jax_models)):
-            for j in range(len(jax_models[i])):
-                for k in range(max_k - len(jax_models[i][j])):
-                    jax_models[i][j].append([0.0] * len(jax_models[i][j][0]))
-
-        jax_models_lst.append(jnp.array(jax_models))
 
     numer, denom, depth, normal = forward_projection(illum_lst, depth_lst, normal_lst, vbuffer_lst, viewproj_lst,
                                                      model_mats_lst, jax_models_lst, random_is_idxs, hh, ww,
