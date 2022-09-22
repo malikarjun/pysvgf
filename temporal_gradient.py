@@ -9,10 +9,9 @@ from asvgf_utils import *
 import random
 from tqdm import tqdm
 from jax.lax import scan
-from main import input_path, output_path
+from jax import lax
+from main import input_path, output_path, global_alpha
 
-
-global_alpha = 0.2
 
 
 def interpolate_vertex(model, prim_id, uv):
@@ -301,34 +300,34 @@ def compute_adaptive_alpha(illum_lst, depth_lst, normal_lst, vbuffer_lst, viewpr
 
 
 
-# if __name__=="__main__":
-#     os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
-#     random.seed(int(time.time()))
-#
-#     illum_lst = []
-#     depth_lst = []
-#     normal_lst = []
-#     vbuffer_lst = []
-#     viewproj_lst = []
-#     model_mats_lst = []
-#     model_fnames_lst = []
-#     models_lst = []
-#
-#     for frame in range(2):
-#         illum_lst.append(read_exr_file(join(input_path, "frame{}.exr".format(frame))))
-#         depth_lst.append(read_exr_file(join(input_path, "frame{}_depth.exr".format(frame)))[:, :, 0])
-#         normal_lst.append(read_exr_file(join(input_path, "frame{}_normal.exr".format(frame))))
-#         vbuffer_lst.append(load_vbuffer(join(input_path, "frame{}_vbuffer.npy".format(frame))))
-#         viewproj_lst.append(np.load(join(input_path, "frame{}_viewproj.npy".format(frame))))
-#
-#         model_mats_lst.append(np.load(join(input_path, "frame{}_model_mats.npy".format(frame))))
-#         model_fnames = read_txt_file(join(input_path, "frame{}_model_fnames.txt".format(frame)))
-#         model_fnames_lst.append(model_fnames)
-#         models_lst.append(load_models(model_fnames))
-#
-#
-#     aa = compute_adaptive_alpha(illum_lst, depth_lst, normal_lst, vbuffer_lst, viewproj_lst, model_mats_lst,
-#                                    models_lst)
-#     write_exr_file(join(output_path, "aa.exr"), aa)
+if __name__=="__main__":
+    os.environ["OPENCV_IO_ENABLE_OPENEXR"] = "1"
+    random.seed(int(time.time()))
+
+    illum_lst = []
+    depth_lst = []
+    normal_lst = []
+    vbuffer_lst = []
+    viewproj_lst = []
+    model_mats_lst = []
+    model_fnames_lst = []
+    models_lst = []
+
+    for frame in range(2):
+        illum_lst.append(read_exr_file(join(input_path, "frame{}.exr".format(frame))))
+        depth_lst.append(read_exr_file(join(input_path, "frame{}_depth.exr".format(frame)))[:, :, 0])
+        normal_lst.append(read_exr_file(join(input_path, "frame{}_normal.exr".format(frame))))
+        vbuffer_lst.append(load_vbuffer(join(input_path, "frame{}_vbuffer.npy".format(frame))))
+        viewproj_lst.append(np.load(join(input_path, "frame{}_viewproj.npy".format(frame))))
+
+        model_mats_lst.append(np.load(join(input_path, "frame{}_model_mats.npy".format(frame))))
+        model_fnames = read_txt_file(join(input_path, "frame{}_model_fnames.txt".format(frame)))
+        model_fnames_lst.append(model_fnames)
+        models_lst.append(load_models(model_fnames))
+
+
+    aa = compute_adaptive_alpha(illum_lst, depth_lst, normal_lst, vbuffer_lst, viewproj_lst, model_mats_lst,
+                                   models_lst)
+    write_exr_file(join(output_path, "aa.exr"), aa)
 
 
